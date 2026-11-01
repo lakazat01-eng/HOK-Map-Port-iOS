@@ -1,0 +1,22 @@
+# Local game archives and extracted resources
+*.zip
+*.7z
+*.rar
+*.pak
+*.bundle
+*.assetbundle
+*.bytes
+*.ab
+
+# Local working directories
+input/
+output/
+work/
+reports/*.json
+reports/*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
