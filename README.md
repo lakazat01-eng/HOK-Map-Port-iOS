@@ -26,7 +26,17 @@ Build a batch tool that understands the relationship between Android and iOS map
 
 - `tools/batch_index.py`: read-only inventory and candidate mapper. Filename/path/CAB matches are evidence leads only.
 - `tools/scene_compare.py`: read-only scene comparator. Compares UnityFS headers, UnityCN metadata fingerprints, CAB/archive IDs, and readable asset-string clues for same-name scenes.
-- `tools/auto_port.py`: conservative analyzer/stager; not yet a general Android-to-iOS converter.
+- `tools/auto_port.py`: original conservative analyzer/stager; not a general Android-to-iOS converter.
+- `tools/batch_port.py`: new batch planner. Scans Android Resources **and Extra**, compares the matching iOS tier plus the third-party iOS reference, writes JSON/CSV reports, and optionally stages only exact path + SHA256 matches. It never treats non-identical bundles as converted.
+
+Run from the project root:
+
+```sh
+python3 tools/batch_port.py --base .
+python3 tools/batch_port.py --base . --stage-identical
+```
+
+Reports are written to `output/batch_port_report.json` and `output/batch_port_report.csv`. Exact matches are staged under `output/ios_candidate/`; existing conflicting files are left untouched.
 - Android/iOS scene bundles currently show UnityFS 2022.3.5f1 and UnityCN indicators. Object-level comparison requires a valid UnityCN decoding path and a Unity serialized-file parser.
 
 ## Safety and data policy
