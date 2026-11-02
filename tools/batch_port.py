@@ -159,8 +159,23 @@ def main():
                 })
                 continue
 
-            same_root = indexes[target_root].get(row["path"])
-            other_root = indexes["ios_extra" if target_root == "ios_resources" else "ios_resources"].get(row["path"])
+            # HoK can place a scene under iOS Extra even when Android ships it
+            # under Resources. Search both iOS tiers before declaring no match.
+            same_candidates = [
+                (key, indexes[key][row["path"]])
+                for key in ("ios_resources", "ios_extra")
+                if row["path"] in indexes[key]
+            ]
+            exact_candidates = [
+                (key, hit) for key, hit in same_candidates
+                if hit.get("sha256") == row["sha256"]
+            ]
+            same_root = exact_candidates[0][1] if exact_candidates else (
+                same_candidates[0][1] if same_candidates else None
+            )
+            matched_tier = exact_candidates[0][0] if exact_candidates else (
+                same_candidates[0][0] if same_candidates else None
+            )
             reference_hits = reference_by_name.get(Path(row["path"]).name.lower(), [])
             source_unity = row.get("unityfs") or {}
             protected = bool(source_unity.get("unitycn_indicator"))
@@ -171,7 +186,7 @@ def main():
                 "source_size": row["size"],
                 "source_sha256": row["sha256"],
                 "source_unityfs": source_unity,
-                "target_root": target_root,
+                "target_root": matched_tier or target_root,
                 "target_path": row["path"] if same_root else None,
                 "reference_candidates": [
                     {"path": hit["path"], "size": hit["size"],
@@ -180,10 +195,12 @@ def main():
                 ],
             }
 
-            if same_root and same_root.get("sha256") == row["sha256"]:
+            if exact_candidates:
                 item["status"] = "exact_identical"
                 if args.stage_identical:
-                    relative = Path(target_prefix(source_root)) / row["path"]
+                    relative = Path(
+                        "Resources/1.64.1" if matched_tier == "ios_resources" else "Extra"
+                    ) / row["path"]
                     destination = base / "output/ios_candidate" / relative
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     if destination.exists():
@@ -206,9 +223,6 @@ def main():
                     if protected or target_unity.get("unitycn_indicator")
                     else "format_specific_conversion_required"
                 )
-            elif other_root:
-                item["status"] = "path_match_in_other_ios_root_only"
-                item["other_ios_root"] = other_root["root"]
             elif reference_hits:
                 item["status"] = "reference_only_candidate"
             elif protected:
@@ -245,7 +259,7 @@ def main():
             "UnityCN indicator is heuristic metadata, not proof of encryption.",
             "No protected archive is decrypted, unpacked, or rebuilt.",
             "A matching path, name, CAB ID, or Unity version is not proof of compatibility.",
-            "Only byte-identical files with the same relative path and matching resource tier are staged.",
+            "Only byte-identical files with the same relative path are staged; Android Resources may map to either iOS Resources or iOS Extra.",
             "Non-identical assets require a format-specific, supported converter before staging."
         ],
     }
