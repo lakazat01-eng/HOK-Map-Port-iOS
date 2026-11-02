@@ -188,6 +188,14 @@ def main():
         for cab in row.get("cab_ids", []):
             add_to_index(by_cab, cab, row)
 
+    # CAB IDs found in many iOS bundles are usually shared dependencies and
+    # are weak evidence for pairing. Only rare IDs (<=3 iOS files) generate
+    # cross-name candidates; common IDs remain visible in the report.
+    cab_frequency = {cab: len({(r["platform_root"], r["relative_path"])
+                               for r in hits})
+                     for cab, hits in by_cab.items()}
+    RARE_CAB_MAX_FILES = 3
+
     mapping = []
     for group in ("android_resources", "android_extra"):
         for a in inventories[group]:
@@ -197,8 +205,9 @@ def main():
             same_name = by_name.get(a["basename"].lower(), [])
             cab_hits = {}
             for cab in a.get("cab_ids", []):
-                for hit in by_cab.get(cab, []):
-                    cab_hits[(hit["platform_root"], hit["relative_path"])] = hit
+                if cab_frequency.get(cab, 0) <= RARE_CAB_MAX_FILES:
+                    for hit in by_cab.get(cab, []):
+                        cab_hits[(hit["platform_root"], hit["relative_path"])] = hit
             candidates = {}
             for hit in exact_path + same_name + list(cab_hits.values()):
                 key = (hit["platform_root"], hit["relative_path"])
@@ -211,9 +220,14 @@ def main():
                     score += 40
                     reasons.append("same_basename")
                 shared = sorted(set(a.get("cab_ids", [])) & set(hit.get("cab_ids", [])))
-                if shared:
-                    score += 30
-                    reasons.append("shared_CAB_ID")
+                rare_shared = [cab for cab in shared
+                               if cab_frequency.get(cab, 0) <= RARE_CAB_MAX_FILES]
+                common_shared = [cab for cab in shared if cab not in rare_shared]
+                if rare_shared:
+                    score += 50 * len(rare_shared)
+                    reasons.append("shared_rare_CAB_ID")
+                if common_shared:
+                    reasons.append("shared_common_CAB_ID")
                 if a["sha256"] == hit["sha256"]:
                     score += 1000
                     reasons.append("identical_SHA256")
@@ -225,10 +239,13 @@ def main():
                     "score": score,
                     "reasons": reasons,
                     "shared_cab_ids": shared,
+                    "informative_shared_cab_ids": rare_shared,
+                    "common_shared_cab_ids": common_shared,
+                    "shared_cab_frequency": {cab: cab_frequency.get(cab, 0) for cab in shared},
                 }
             ranked = sorted(candidates.values(), key=lambda x: (-x["score"], x["platform_root"], x["relative_path"]))
             best_reasons = set(ranked[0]["reasons"]) if ranked else set()
-            strong_cab = any("shared_CAB_ID" in c["reasons"] for c in ranked)
+            strong_cab = any("shared_rare_CAB_ID" in c["reasons"] for c in ranked)
             same_path = any("same_relative_path" in c["reasons"] for c in ranked)
             same_name = any("same_basename" in c["reasons"] for c in ranked)
             if any("identical_SHA256" in c["reasons"] for c in ranked):
@@ -255,6 +272,8 @@ def main():
                 "candidates": ranked[:30],
                 "status": status,
                 "has_shared_cab_id_candidate": strong_cab,
+                "android_common_cab_ids": [cab for cab in a.get("cab_ids", [])
+                                           if cab_frequency.get(cab, 0) > RARE_CAB_MAX_FILES],
                 "has_same_relative_path_candidate": same_path,
                 "has_same_basename_candidate": same_name,
             })
@@ -287,13 +306,16 @@ def main():
                                       for r in inventories[group]
                                       if (r.get("unityfs") or {}).get("unitycn_flagged")),
         "exact_identical": sum(1 for r in mapping if r["status"] == "exact_identical"),
-        "shared_cab_id_needs_validation": sum(1 for r in mapping if r["status"] == "shared_cab_id_needs_validation"),
+        "shared_rare_cab_id_needs_validation": sum(1 for r in mapping if r["status"] == "shared_cab_id_needs_validation"),
+        "rare_cab_frequency_max_ios_files": RARE_CAB_MAX_FILES,
+        "ios_cab_ids_total": len(cab_frequency),
+        "ios_cab_ids_common_over_threshold": sum(1 for n in cab_frequency.values() if n > RARE_CAB_MAX_FILES),
         "path_and_name_only_needs_validation": sum(1 for r in mapping if r["status"] == "path_and_name_only_needs_validation"),
         "basename_only_needs_validation": sum(1 for r in mapping if r["status"] == "basename_only_needs_validation"),
         "path_only_needs_validation": sum(1 for r in mapping if r["status"] == "path_only_needs_validation"),
         "no_candidate": sum(1 for r in mapping if r["status"] == "no_candidate"),
         "staged_or_modified": 0,
-        "note": "Read-only index. Same path/name and shared CAB IDs are separate evidence classes, not proof of port compatibility. UnityCN-encrypted bundles are not decrypted or rebuilt."
+        "note": "Read-only index. Cross-name CAB candidates use only IDs found in at most 3 iOS files; common CAB IDs are retained as weak evidence. No candidate proves port compatibility. UnityCN-encrypted bundles are not decrypted or rebuilt."
     }
     (out / "batch_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
