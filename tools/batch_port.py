@@ -14,6 +14,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -53,8 +54,10 @@ def unityfs_info(path):
         flags = int.from_bytes(fixed[16:20], "big")
 
         # Heuristic indicator only; this does not validate or decode UnityCN.
-        parts = revision.split(".")
-        version = tuple(int(x) for x in parts[:3])
+        match = re.match(r"^(\d+)\.(\d+)\.(\d+)", revision)
+        if not match:
+            raise ValueError("unrecognized Unity revision")
+        version = tuple(int(x) for x in match.groups())
         old_layout = (
             version[0] < 2020 or
             (version[0] == 2020 and version[1] == 3 and version[2] <= 34) or
