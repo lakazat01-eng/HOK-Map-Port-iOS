@@ -16,7 +16,7 @@ class BatchPortTests(unittest.TestCase):
             "input/ios/map_ios_orgi/Resources/1.64.1/assetbundle/ui/map.assetbundle",
             "input/ios/map_ios_orgi/Extra/assetbundle/scene/lv3.assetbundle",
             "input/ios/map_ios_orgi/Extra/assetbundle/scene/lv5.assetbundle",
-            "input/hok_sence_ios/scene/lv3.assetbundle",
+            "input/hok_sence_ios/scene/lv5.assetbundle",
         ]
         for item in paths:
             path = root / item
