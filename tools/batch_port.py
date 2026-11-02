@@ -141,7 +141,7 @@ def main():
 
     reference_by_name = {}
     for row in inventory["ios_reference"]:
-        if "sha256" in row:
+        if "sha256" in row and row.get("size", 0) > 16 and row.get("unityfs"):
             reference_by_name.setdefault(Path(row["path"]).name.lower(), []).append(row)
 
     mapping = []
