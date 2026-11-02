@@ -93,6 +93,23 @@ class BatchPortTests(unittest.TestCase):
             self.assertEqual(row["target_root"], "ios_extra")
             self.assertEqual(row["target_size"], len(b"different-ios-scene"))
 
+    def test_identical_hash_at_other_path_is_review_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_project(root)
+            alternate = root / "input/android/map_hok_andr/Resources/1.64.1/assetbundle/ui/map_alt.assetbundle"
+            alternate.write_bytes(b"ios-map")
+            report = self.run_tool(root, "--stage-identical")
+            row = next(
+                item for item in report["mapping"]
+                if item.get("source_path") == "assetbundle/ui/map_alt.assetbundle"
+            )
+            self.assertEqual(row["status"], "exact_content_other_path_needs_review")
+            self.assertFalse(
+                (root / "output/ios_candidate/Resources/1.64.1/assetbundle/ui/map_alt.assetbundle").exists()
+            )
+            self.assertTrue(row["exact_content_candidates"])
+
     def test_asset_categories(self):
         self.assertEqual(batch_port.classify_asset("assetbundle/scene/scene_artist.assetbundle"), "MAP_TERRAIN")
         self.assertEqual(batch_port.classify_asset("assetbundle/ugui_map5.assetbundle"), "MINIMAP_UI")
