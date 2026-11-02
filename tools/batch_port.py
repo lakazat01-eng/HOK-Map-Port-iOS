@@ -156,6 +156,12 @@ def main():
             row["path"]: row for row in inventory[key] if "sha256" in row
         }
 
+    ios_by_hash = {}
+    for key in ("ios_resources", "ios_extra"):
+        for row in inventory[key]:
+            if "sha256" in row:
+                ios_by_hash.setdefault(row["sha256"], []).append(row)
+
     reference_by_name = {}
     for row in inventory["ios_reference"]:
         if "sha256" in row and row.get("size", 0) > 16 and row.get("unityfs"):
@@ -243,6 +249,12 @@ def main():
                     if protected or target_unity.get("unitycn_indicator")
                     else "format_specific_conversion_required"
                 )
+            elif ios_by_hash.get(row["sha256"]):
+                item["status"] = "exact_content_other_path_needs_review"
+                item["exact_content_candidates"] = [
+                    {"root": hit["root"], "path": hit["path"]}
+                    for hit in ios_by_hash[row["sha256"]]
+                ]
             elif reference_hits:
                 item["status"] = "reference_only_candidate"
             elif protected:
