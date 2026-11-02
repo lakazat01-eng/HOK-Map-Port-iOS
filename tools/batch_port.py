@@ -105,8 +105,25 @@ def scan(root, label):
     return rows
 
 
-def target_prefix(label):
-    return "Resources/1.64.1" if label == "android_resources" else "Extra"
+def classify_asset(path):
+    name = path.lower()
+    if "/scene/" in "/" + name or "terrain" in name:
+        return "MAP_TERRAIN"
+    if "minimap_support" in name or "minimap-support" in name:
+        return "MINIMAP_SUPPORT_UI"
+    if "ugui_map" in name or "minimap" in name:
+        return "MINIMAP_UI"
+    if "shop" in name:
+        return "SHOP_UI"
+    if "tower" in name:
+        return "TOWERS"
+    if "monster" in name:
+        return "MONSTERS"
+    if "soldier" in name or "minion" in name:
+        return "MINIONS"
+    if "ugui" in name or "/ui" in "/" + name or "uisystem" in name:
+        return "OTHER_UI"
+    return "OTHER"
 
 
 def main():
@@ -183,6 +200,7 @@ def main():
             item = {
                 "source_root": source_root,
                 "source_path": row["path"],
+                "asset_category": classify_asset(row["path"]),
                 "source_size": row["size"],
                 "source_sha256": row["sha256"],
                 "source_unityfs": source_unity,
@@ -232,9 +250,13 @@ def main():
             mapping.append(item)
 
     counts = {}
+    category_counts = {}
     for item in mapping:
         status = item["status"]
         counts[status] = counts.get(status, 0) + 1
+        category = item.get("asset_category")
+        if category:
+            category_counts[category] = category_counts.get(category, 0) + 1
 
     report = {
         "tool": "HOK Map Port batch planner",
@@ -248,6 +270,7 @@ def main():
             "ios_extra_files": len(inventory["ios_extra"]),
             "ios_reference_files": len(inventory["ios_reference"]),
             "status_counts": counts,
+            "category_counts": category_counts,
             "staged": len(staged),
             "stage_collisions": len(collisions),
         },
@@ -272,13 +295,13 @@ def main():
     with csv_path.open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
         writer.writerow([
-            "source_root", "source_path", "status", "target_root",
+            "source_root", "source_path", "asset_category", "status", "target_root",
             "target_path", "source_size", "target_size", "stage_status"
         ])
         for item in mapping:
             writer.writerow([
                 item.get("source_root"), item.get("source_path"),
-                item.get("status"), item.get("target_root"),
+                item.get("asset_category"), item.get("status"), item.get("target_root"),
                 item.get("target_path"), item.get("source_size"),
                 item.get("target_size"), item.get("stage_status")
             ])
