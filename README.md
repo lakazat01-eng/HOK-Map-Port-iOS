@@ -49,3 +49,14 @@ Reports are written to `output/batch_port_report.json` and `output/batch_port_re
 ## Runtime
 
 Initial tools use Python 3 standard library only and target Python 3.9+. Optional external tools may be detected at runtime, but the workflow must remain explicit about unsupported operations.
+
+
+## Tests
+
+Run the synthetic batch-planner tests with:
+
+```sh
+python3 -m unittest discover -s tests -v
+```
+
+The tests cover Android Resources → iOS Extra cross-tier matching, exact-hash-only staging, reference-only evidence, and source-file preservation. GitHub Actions runs the tests and syntax checks on pushes and pull requests.
