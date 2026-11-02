@@ -159,6 +159,12 @@ def add_to_index(index, key, row):
         index[key].append(row)
 
 
+def normalized_platform_path(path):
+    # Android/iOS resource trees often differ only by platform directory.
+    parts = path.split("/")
+    return "/".join("Ios" if p.lower() == "android" else p for p in parts)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--base", required=True, help="project root")
@@ -179,11 +185,17 @@ def main():
     inventories = {k: scan_root(v, k) for k, v in roots.items()}
     ios_rows = inventories["ios_resources"] + inventories["ios_extra"] + inventories["ios_scene_ref"]
 
-    by_path, by_name, by_cab = defaultdict(list), defaultdict(list), defaultdict(list)
+    by_path, by_normalized_path, by_name, by_cab = (
+        defaultdict(list), defaultdict(list), defaultdict(list), defaultdict(list))
     for row in ios_rows:
         if "sha256" not in row:
             continue
+        # Third-party scene reference folder may contain pointer/placeholder
+        # files; only actual UnityFS bundles are valid binary candidates.
+        if row["platform_root"] == "ios_scene_ref" and row.get("type") != "UnityFS":
+            continue
         add_to_index(by_path, row["relative_path"], row)
+        add_to_index(by_normalized_path, normalized_platform_path(row["relative_path"]), row)
         add_to_index(by_name, row["basename"].lower(), row)
         for cab in row.get("cab_ids", []):
             add_to_index(by_cab, cab, row)
@@ -210,6 +222,8 @@ def main():
             if "sha256" not in a:
                 continue
             exact_path = by_path.get(a["relative_path"], [])
+            normalized_path_hits = by_normalized_path.get(
+                normalized_platform_path(a["relative_path"]), [])
             same_name = by_name.get(a["basename"].lower(), [])
             cab_hits = {}
             for cab in a.get("cab_ids", []):
@@ -217,13 +231,17 @@ def main():
                     for hit in by_cab.get(cab, []):
                         cab_hits[(hit["platform_root"], hit["relative_path"])] = hit
             candidates = {}
-            for hit in exact_path + same_name + list(cab_hits.values()):
+            for hit in exact_path + normalized_path_hits + same_name + list(cab_hits.values()):
                 key = (hit["platform_root"], hit["relative_path"])
                 score = 0
                 reasons = []
                 if hit["relative_path"] == a["relative_path"]:
-                    score += 100
+                    score += 120
                     reasons.append("same_relative_path")
+                elif (normalized_platform_path(hit["relative_path"]) ==
+                      normalized_platform_path(a["relative_path"])):
+                    score += 110
+                    reasons.append("normalized_platform_path")
                 if hit["basename"].lower() == a["basename"].lower():
                     score += 40
                     reasons.append("same_basename")
@@ -257,7 +275,9 @@ def main():
             ranked = sorted(candidates.values(), key=lambda x: (-x["score"], x["platform_root"], x["relative_path"]))
             best_reasons = set(ranked[0]["reasons"]) if ranked else set()
             strong_cab = any("shared_rare_CAB_ID" in c["reasons"] for c in ranked)
-            same_path = any("same_relative_path" in c["reasons"] for c in ranked)
+            same_path = any(
+                "same_relative_path" in c["reasons"] or
+                "normalized_platform_path" in c["reasons"] for c in ranked)
             same_name = any("same_basename" in c["reasons"] for c in ranked)
             if any("identical_SHA256" in c["reasons"] for c in ranked):
                 status = "exact_identical"
@@ -285,7 +305,10 @@ def main():
                 "has_shared_cab_id_candidate": strong_cab,
                 "android_common_cab_ids": [cab for cab in a.get("cab_ids", [])
                                            if not informative_cab(cab)],
-                "has_same_relative_path_candidate": same_path,
+                "has_same_relative_path_candidate": any(
+                    "same_relative_path" in c["reasons"] for c in ranked),
+                "has_normalized_platform_path_candidate": any(
+                    "normalized_platform_path" in c["reasons"] for c in ranked),
                 "has_same_basename_candidate": same_name,
             })
 
@@ -329,7 +352,7 @@ def main():
         "path_only_needs_validation": sum(1 for r in mapping if r["status"] == "path_only_needs_validation"),
         "no_candidate": sum(1 for r in mapping if r["status"] == "no_candidate"),
         "staged_or_modified": 0,
-        "note": "Read-only index. Cross-name CAB candidates use only IDs found in at most 3 files on BOTH platforms; common CAB IDs remain weak evidence. Same-path/name matches are still listed independently. No candidate proves port compatibility. UnityCN-encrypted bundles are not decrypted or rebuilt."
+        "note": "Read-only index. Cross-name CAB candidates use only IDs found in at most 3 files on BOTH platforms; common CAB IDs remain weak evidence. Android/Ios path normalization is used for locale-aware matching. Non-UnityFS third-party scene references are excluded as binary targets. No candidate proves port compatibility. UnityCN-encrypted bundles are not decrypted or rebuilt."
     }
     (out / "batch_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
