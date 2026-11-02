@@ -27,7 +27,7 @@ class BatchPortTests(unittest.TestCase):
         (root / paths[3]).write_bytes(b"ios-map")
         (root / paths[4]).write_bytes(b"same-scene")
         (root / paths[5]).write_bytes(b"ios-lv5")
-        (root / paths[6]).write_bytes(b"reference-scene-is-not-the-same")
+        (root / paths[6]).write_bytes(b"UnityFS\\0")
 
     def run_tool(self, root, *args):
         with patch("sys.argv", ["batch_port.py", "--base", str(root), *args]):
