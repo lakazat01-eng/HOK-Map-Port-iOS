@@ -73,7 +73,7 @@ def unityfs_header(data):
         envelope_offset = start + 20
         envelope_size = 70 if encrypted else 0
         aligned_after_envelope = (
-            (envelope_offset + envelope_size + 15) & ~15
+            (envelope_offset + envelope_size + 15) & ~155
         )
         compression = flags & 0x3F
         compression_names = {
