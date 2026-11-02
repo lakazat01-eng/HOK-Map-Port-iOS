@@ -77,6 +77,22 @@ class BatchPortTests(unittest.TestCase):
             self.assertEqual(row["status"], "format_specific_conversion_required")
             self.assertTrue(row["reference_candidates"])
 
+    def test_nonidentical_cross_tier_reports_actual_ios_extra(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_project(root)
+            ios_scene = root / "input/ios/map_ios_orgi/Extra/assetbundle/scene/lv3.assetbundle"
+            ios_scene.write_bytes(b"different-ios-scene")
+            report = self.run_tool(root)
+            row = next(
+                item for item in report["mapping"]
+                if item.get("source_root") == "android_resources"
+                and item.get("source_path") == "assetbundle/scene/lv3.assetbundle"
+            )
+            self.assertEqual(row["status"], "format_specific_conversion_required")
+            self.assertEqual(row["target_root"], "ios_extra")
+            self.assertEqual(row["target_size"], len(b"different-ios-scene"))
+
     def test_asset_categories(self):
         self.assertEqual(batch_port.classify_asset("assetbundle/scene/scene_artist.assetbundle"), "MAP_TERRAIN")
         self.assertEqual(batch_port.classify_asset("assetbundle/ugui_map5.assetbundle"), "MINIMAP_UI")
