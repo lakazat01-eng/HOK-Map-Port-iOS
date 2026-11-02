@@ -57,7 +57,7 @@ def unityfs_header(data):
         raw_uncompressed_info = int.from_bytes(raw[12:16], "big")
         flags = int.from_bytes(raw[16:20], "big")
 
-        match = re.match(r"^(\\d+)\\.(\\d+)\\.(\\d+)", unity_revision)
+        match = re.match(r"^(\d+)\.(\d+)\.(\d+)", unity_revision)
         mask = None
         if match:
             major, minor, patch = map(int, match.groups())
