@@ -190,8 +190,10 @@ def main():
             same_root = exact_candidates[0][1] if exact_candidates else (
                 same_candidates[0][1] if same_candidates else None
             )
-            matched_tier = exact_candidates[0][0] if exact_candidates else (
-                same_candidates[0][0] if same_candidates else None
+            matched_tier = (
+                exact_candidates[0][0] if exact_candidates
+                else same_candidates[0][0] if same_candidates
+                else None
             )
             reference_hits = reference_by_name.get(Path(row["path"]).name.lower(), [])
             source_unity = row.get("unityfs") or {}
