@@ -227,6 +227,23 @@ def main():
                     "shared_cab_ids": shared,
                 }
             ranked = sorted(candidates.values(), key=lambda x: (-x["score"], x["platform_root"], x["relative_path"]))
+            best_reasons = set(ranked[0]["reasons"]) if ranked else set()
+            strong_cab = any("shared_CAB_ID" in c["reasons"] for c in ranked)
+            same_path = any("same_relative_path" in c["reasons"] for c in ranked)
+            same_name = any("same_basename" in c["reasons"] for c in ranked)
+            if any("identical_SHA256" in c["reasons"] for c in ranked):
+                status = "exact_identical"
+            elif strong_cab:
+                status = "shared_cab_id_needs_validation"
+            elif same_path and same_name:
+                status = "path_and_name_only_needs_validation"
+            elif same_name:
+                status = "basename_only_needs_validation"
+            elif same_path:
+                status = "path_only_needs_validation"
+            else:
+                status = "no_candidate"
+
             mapping.append({
                 "android_root": group,
                 "android_path": a["relative_path"],
@@ -236,9 +253,10 @@ def main():
                 "android_cab_ids": a.get("cab_ids", []),
                 "candidate_count": len(ranked),
                 "candidates": ranked[:30],
-                "status": ("exact_identical" if any("identical_SHA256" in c["reasons"] for c in ranked)
-                           else "candidate_match_needs_validation" if ranked
-                           else "no_candidate"),
+                "status": status,
+                "has_shared_cab_id_candidate": strong_cab,
+                "has_same_relative_path_candidate": same_path,
+                "has_same_basename_candidate": same_name,
             })
 
     out = base / "output"
@@ -251,13 +269,14 @@ def main():
         w = csv.writer(f)
         w.writerow(["android_root", "android_path", "android_size", "status",
                     "candidate_count", "best_candidate_root", "best_candidate_path",
-                    "best_candidate_score", "shared_cab_ids"])
+                    "best_candidate_score", "best_candidate_reasons", "shared_cab_ids"])
         for row in mapping:
             best = row["candidates"][0] if row["candidates"] else {}
             w.writerow([row["android_root"], row["android_path"], row["android_size"],
                         row["status"], row["candidate_count"],
                         best.get("platform_root", ""), best.get("relative_path", ""),
-                        best.get("score", ""), ";".join(best.get("shared_cab_ids", []))])
+                        best.get("score", ""), ";".join(best.get("reasons", [])),
+                        ";".join(best.get("shared_cab_ids", []))])
 
     summary = {
         "android_files": sum(len(inventories[k]) for k in ("android_resources", "android_extra")),
@@ -268,10 +287,13 @@ def main():
                                       for r in inventories[group]
                                       if (r.get("unityfs") or {}).get("unitycn_flagged")),
         "exact_identical": sum(1 for r in mapping if r["status"] == "exact_identical"),
-        "candidate_match_needs_validation": sum(1 for r in mapping if r["status"] == "candidate_match_needs_validation"),
+        "shared_cab_id_needs_validation": sum(1 for r in mapping if r["status"] == "shared_cab_id_needs_validation"),
+        "path_and_name_only_needs_validation": sum(1 for r in mapping if r["status"] == "path_and_name_only_needs_validation"),
+        "basename_only_needs_validation": sum(1 for r in mapping if r["status"] == "basename_only_needs_validation"),
+        "path_only_needs_validation": sum(1 for r in mapping if r["status"] == "path_only_needs_validation"),
         "no_candidate": sum(1 for r in mapping if r["status"] == "no_candidate"),
         "staged_or_modified": 0,
-        "note": "Read-only index. Candidate matches are leads, not proof of Android-to-iOS compatibility. UnityCN-encrypted bundles are not decrypted or rebuilt."
+        "note": "Read-only index. Same path/name and shared CAB IDs are separate evidence classes, not proof of port compatibility. UnityCN-encrypted bundles are not decrypted or rebuilt."
     }
     (out / "batch_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
