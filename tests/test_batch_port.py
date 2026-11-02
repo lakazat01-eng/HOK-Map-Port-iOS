@@ -77,6 +77,12 @@ class BatchPortTests(unittest.TestCase):
             self.assertEqual(row["status"], "format_specific_conversion_required")
             self.assertTrue(row["reference_candidates"])
 
+    def test_asset_categories(self):
+        self.assertEqual(batch_port.classify_asset("assetbundle/scene/scene_artist.assetbundle"), "MAP_TERRAIN")
+        self.assertEqual(batch_port.classify_asset("assetbundle/ugui_map5.assetbundle"), "MINIMAP_UI")
+        self.assertEqual(batch_port.classify_asset("assetbundle/npc/charbattle_soldier.assetbundle"), "MINIONS")
+        self.assertEqual(batch_port.classify_asset("assetbundle/npc/charbattle_monster.assetbundle"), "MONSTERS")
+
     def test_sources_are_not_modified(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
