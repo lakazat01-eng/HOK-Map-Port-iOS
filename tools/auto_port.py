@@ -28,7 +28,7 @@ def sha256(path):
 
 
 def cstring(data, pos):
-    end = data.find(b"\\0", pos)
+    end = data.find(b"\0", pos)
     if end < 0:
         raise ValueError("unterminated UnityFS version string")
     return data[pos:end].decode("ascii", "replace"), end + 1
