@@ -15,7 +15,7 @@ from collections import defaultdict
 from pathlib import Path
 
 CHUNK = 1024 * 1024
-UNITYFS = b"UnityFS\\0"
+UNITYFS = b"UnityFS\0"
 CAB_RE = re.compile(rb"CAB-([0-9a-fA-F]{32})")
 ARCHIVE_RE = re.compile(rb"archive:/CAB-([0-9a-fA-F]{32})")
 PRINTABLE_RE = re.compile(rb"[ -~]{5,}")
@@ -31,7 +31,7 @@ def sha256_file(path):
 
 
 def cstring(data, pos):
-    end = data.find(b"\\0", pos)
+    end = data.find(b"\0", pos)
     if end < 0:
         raise ValueError("unterminated header string")
     return data[pos:end].decode("ascii", "replace"), end + 1
