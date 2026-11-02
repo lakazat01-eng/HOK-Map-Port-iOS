@@ -77,45 +77,32 @@ def header_info(path):
         return {"type": "UnityFS", "parse_error": str(exc)}
 
 
-def scan_evidence(path):
-    sha = hashlib.sha256()
-    cabs, archives, strings = set(), set(), set()
+def scan_evidence(path, with_hash=False):
+    # Only scan compact CAB tokens. The payload is UnityCN/LZ4 data, so
+    # generic printable-string extraction mostly reports compressed noise.
+    sha = hashlib.sha256() if with_hash else None
+    cabs, archives = set(), set()
     carry = b""
-    total = 0
+    total = path.stat().st_size
     with path.open("rb") as f:
         while True:
             block = f.read(CHUNK)
             if not block:
                 break
-            sha.update(block)
-            total += len(block)
+            if sha:
+                sha.update(block)
             data = carry + block
-            for x in CAB_RE.findall(data):
-                cabs.add(x.decode("ascii").lower())
-            for x in ARCHIVE_RE.findall(data):
-                archives.add(x.decode("ascii").lower())
-            for raw in STRING_RE.findall(data):
-                if len(strings) < MAX_STRINGS:
-                    value = raw.decode("ascii", "replace")
-                    if any(ch.isalpha() for ch in value):
-                        strings.add(value)
-            carry = data[-512:]
-    # Keep asset-like strings only; common noise is discarded.
-    clues = sorted(s for s in strings if (
-        "/" in s or "_" in s or "." in s or
-        any(k in s.lower() for k in ("scene", "map", "terrain", "light", "shader"))
-    ))
+            cabs.update(x.decode("ascii").lower() for x in CAB_RE.findall(data))
+            archives.update(x.decode("ascii").lower() for x in ARCHIVE_RE.findall(data))
+            carry = data[-128:]
     return {
         "size": total,
-        "sha256": sha.hexdigest(),
+        "sha256": sha.hexdigest() if sha else None,
         "cab_ids": sorted(cabs),
         "archive_cab_ids": sorted(archives),
-        "string_count_capped": len(strings),
-        "asset_string_clues": clues[:2500],
     }
 
-
-def walk_scenes(root, label):
+def walk_scenes(root, label, with_hash=False):
     rows = []
     if not root.is_dir():
         return rows
@@ -128,7 +115,7 @@ def walk_scenes(root, label):
             p = Path(base) / name
             try:
                 h = header_info(p)
-                ev = scan_evidence(p)
+                ev = scan_evidence(p, with_hash=with_hash)
                 rows.append({
                     "source": label,
                     "relative_path": p.relative_to(root).as_posix(),
@@ -145,6 +132,8 @@ def walk_scenes(root, label):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--base", required=True)
+    ap.add_argument("--hash", action="store_true",
+                    help="also calculate SHA256 (slower; disabled by default)")
     args = ap.parse_args()
     base = Path(args.base).resolve()
     inp = base / "input"
@@ -163,7 +152,7 @@ def main():
             if not roots[key].is_dir():
                 raise SystemExit("Missing scene input: %s (%s)" % (key, roots[key]))
 
-    inventories = {k: walk_scenes(v, k) for k, v in roots.items()}
+    inventories = {k: walk_scenes(v, k, with_hash=args.hash) for k, v in roots.items()}
     ios = inventories["ios_resources"] + inventories["ios_extra"] + inventories["ios_scene_ref"]
     ios_by_name = defaultdict(list)
     for row in ios:
@@ -174,7 +163,6 @@ def main():
     for a in inventories["android"]:
         candidates = ios_by_name.get(a["basename"].lower(), [])
         for b in candidates:
-            aset, bset = set(a.get("asset_string_clues", [])), set(b.get("asset_string_clues", []))
             ac, bc = set(a.get("cab_ids", [])), set(b.get("cab_ids", []))
             comparisons.append({
                 "android_path": a["relative_path"],
@@ -183,20 +171,17 @@ def main():
                 "android_size": a.get("size"),
                 "ios_size": b.get("size"),
                 "size_ratio_ios_to_android": round(b["size"] / a["size"], 5) if a.get("size") else None,
-                "same_sha256": a.get("sha256") == b.get("sha256"),
+                "same_sha256": (a.get("sha256") == b.get("sha256")) if args.hash else None,
                 "same_unity_revision": a.get("header", {}).get("unity_revision") == b.get("header", {}).get("unity_revision"),
                 "same_flags": a.get("header", {}).get("flags") == b.get("header", {}).get("flags"),
                 "shared_cab_ids": sorted(ac & bc),
                 "shared_archive_cab_ids": sorted(set(a.get("archive_cab_ids", [])) & set(b.get("archive_cab_ids", []))),
-                "shared_asset_string_clues": sorted(aset & bset)[:500],
-                "android_only_asset_string_clues": sorted(aset - bset)[:500],
-                "ios_only_asset_string_clues": sorted(bset - aset)[:500],
-                "evidence_note": "String/CAB overlap is a lead only. UnityCN encrypted data may hide object/dependency structure; no compatibility conclusion is made."
+                "evidence_note": "CAB overlap is a lead only. Generic strings are intentionally not extracted from compressed/encrypted payloads; no compatibility conclusion is made."
             })
 
     report = {
         "tool": "HOK Scene Structural Comparator",
-        "version": 1,
+        "version": 2,
         "read_only": True,
         "roots": {k: str(v) for k, v in roots.items()},
         "counts": {k: len(v) for k, v in inventories.items()},
@@ -204,7 +189,7 @@ def main():
         "inventories": inventories,
         "limitations": [
             "Does not decrypt UnityCN or reconstruct Unity serialized files.",
-            "Readable strings and CAB identifiers are clues, not proof of matching objects.",
+            "CAB identifiers are clues, not proof of matching objects; printable strings in compressed/encrypted payloads are intentionally omitted.",
             "Object-level dependency comparison requires valid UnityCN decoding and a Unity serialized-file parser."
         ]
     }
