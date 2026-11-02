@@ -24,7 +24,6 @@ def get_entry(report, platform, name):
 
 
 def stream_base(bundle):
-    # Locate the plaintext Unity SerializedFile header used by ugui_map5.
     for match in re.finditer(rb"20\d\d\.\d+\.\d+f1\x00", bundle[:0x4000]):
         start = match.start() - 0x30
         if start < 0 or len(bundle) < start + 0x30:
@@ -33,10 +32,17 @@ def stream_base(bundle):
         if header[2] != 22:
             continue
         serialized_size = header[6]
-        if serialized_size <= 0 or start + serialized_size > len(bundle):
-            continue
-        return start + ((serialized_size + 15) // 16 * 16)
+        if serialized_size > 0 and start + serialized_size <= len(bundle):
+            return start + ((serialized_size + 15) // 16 * 16)
     raise ValueError("Could not locate supported plaintext SerializedFile v22")
+
+
+def read_stream(bundle, entry):
+    start = stream_base(bundle) + entry["stream_offset"]
+    end = start + entry["stream_size"]
+    if start < 0 or end > len(bundle):
+        raise ValueError("Texture stream range is outside bundle")
+    return bundle[start:end], start, end
 
 
 def main():
@@ -50,7 +56,6 @@ def main():
 
     with open(args.metadata, "r", encoding="utf-8") as f:
         report = json.load(f)
-
     src = get_entry(report, "android", args.texture)
     dst = get_entry(report, "ios", args.texture)
 
@@ -61,26 +66,20 @@ def main():
             f"{k}: Android={src[k]} iOS={dst[k]}" for k in mismatches
         ))
 
-    with open(src["file"], "rb") as f:
-        payload = f.read()
-    if len(payload) != src["stream_size"] or sha256(payload) != src["sha256"]:
-        raise SystemExit("REFUSED: Android extracted payload failed size/hash check")
+    with open(args.android_bundle, "rb") as f:
+        android = f.read()
+    source_stream, _, _ = read_stream(android, src)
+    if sha256(source_stream) != src["sha256"]:
+        raise SystemExit("REFUSED: Android bundle differs from extraction metadata")
 
     with open(args.ios_bundle, "rb") as f:
         original = f.read()
-
-    base = stream_base(original)
-    start = base + dst["stream_offset"]
-    end = start + dst["stream_size"]
-    if start < base or end > len(original):
-        raise SystemExit("REFUSED: iOS texture stream range is outside the bundle")
-
-    current = original[start:end]
+    current, start, end = read_stream(original, dst)
     if sha256(current) != dst["sha256"]:
-        raise SystemExit("REFUSED: iOS bundle does not match extraction metadata")
+        raise SystemExit("REFUSED: iOS bundle differs from extraction metadata")
 
     patched = bytearray(original)
-    patched[start:end] = payload
+    patched[start:end] = source_stream
 
     os.makedirs(args.out, exist_ok=True)
     out_path = os.path.join(args.out, f"ios_with_android_{args.texture}.assetbundle")
@@ -89,9 +88,9 @@ def main():
 
     with open(out_path, "xb") as f:
         f.write(patched)
-
     with open(out_path, "rb") as f:
         check = f.read()
+
     if check[:start] != original[:start] or check[end:] != original[end:]:
         os.remove(out_path)
         raise SystemExit("FAIL: bytes outside selected texture changed")
