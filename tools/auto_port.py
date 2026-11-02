@@ -230,9 +230,15 @@ def main():
                                  "type": row["type"],
                                  "same_name_candidates": basename_hits})
 
+    unitycn_counts = {
+        name: sum(1 for row in data[name]
+                  if row.get("unityfs_header", {}).get("unitycn_detected"))
+        for name in ("android", "ios_res", "ios_extra", "ios_scene_ref")
+    }
+
     report = {
         "tool": "HOK Map Port iOS auto-port analyzer",
-        "version": 1,
+        "version": 2,
         "mode": "stage-identical-only" if args.stage else "analyze-only",
         "summary": {
             "android_files": len(data["android"]),
@@ -243,6 +249,7 @@ def main():
             "different_content_same_path": len(conflicts),
             "android_only_needing_analysis": len(android_only),
             "staged": len(staged),
+            "unitycn_detected_files": unitycn_counts,
         },
         "identical": identical,
         "conflicts": conflicts,
