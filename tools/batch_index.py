@@ -188,13 +188,21 @@ def main():
         for cab in row.get("cab_ids", []):
             add_to_index(by_cab, cab, row)
 
-    # CAB IDs found in many iOS bundles are usually shared dependencies and
-    # are weak evidence for pairing. Only rare IDs (<=3 iOS files) generate
-    # cross-name candidates; common IDs remain visible in the report.
+    # A CAB is informative only when it is rare on BOTH platforms.
+    # This prevents one iOS CAB shared by dozens of Android variants from
+    # generating a huge false candidate fan-out.
     cab_frequency = {cab: len({(r["platform_root"], r["relative_path"])
                                for r in hits})
                      for cab, hits in by_cab.items()}
+    android_cab_frequency = defaultdict(set)
+    for group in ("android_resources", "android_extra"):
+        for row in inventories[group]:
+            for cab in row.get("cab_ids", []):
+                android_cab_frequency[cab].add((group, row["relative_path"]))
     RARE_CAB_MAX_FILES = 3
+    def informative_cab(cab):
+        return (cab_frequency.get(cab, 0) <= RARE_CAB_MAX_FILES and
+                len(android_cab_frequency.get(cab, ())) <= RARE_CAB_MAX_FILES)
 
     mapping = []
     for group in ("android_resources", "android_extra"):
@@ -205,7 +213,7 @@ def main():
             same_name = by_name.get(a["basename"].lower(), [])
             cab_hits = {}
             for cab in a.get("cab_ids", []):
-                if cab_frequency.get(cab, 0) <= RARE_CAB_MAX_FILES:
+                if informative_cab(cab):
                     for hit in by_cab.get(cab, []):
                         cab_hits[(hit["platform_root"], hit["relative_path"])] = hit
             candidates = {}
@@ -220,8 +228,7 @@ def main():
                     score += 40
                     reasons.append("same_basename")
                 shared = sorted(set(a.get("cab_ids", [])) & set(hit.get("cab_ids", [])))
-                rare_shared = [cab for cab in shared
-                               if cab_frequency.get(cab, 0) <= RARE_CAB_MAX_FILES]
+                rare_shared = [cab for cab in shared if informative_cab(cab)]
                 common_shared = [cab for cab in shared if cab not in rare_shared]
                 if rare_shared:
                     score += 50 * len(rare_shared)
@@ -241,7 +248,11 @@ def main():
                     "shared_cab_ids": shared,
                     "informative_shared_cab_ids": rare_shared,
                     "common_shared_cab_ids": common_shared,
-                    "shared_cab_frequency": {cab: cab_frequency.get(cab, 0) for cab in shared},
+                    "shared_cab_frequency": {
+                        cab: {"ios_files": cab_frequency.get(cab, 0),
+                              "android_files": len(android_cab_frequency.get(cab, ()))}
+                        for cab in shared
+                    },
                 }
             ranked = sorted(candidates.values(), key=lambda x: (-x["score"], x["platform_root"], x["relative_path"]))
             best_reasons = set(ranked[0]["reasons"]) if ranked else set()
@@ -273,7 +284,7 @@ def main():
                 "status": status,
                 "has_shared_cab_id_candidate": strong_cab,
                 "android_common_cab_ids": [cab for cab in a.get("cab_ids", [])
-                                           if cab_frequency.get(cab, 0) > RARE_CAB_MAX_FILES],
+                                           if not informative_cab(cab)],
                 "has_same_relative_path_candidate": same_path,
                 "has_same_basename_candidate": same_name,
             })
@@ -310,12 +321,15 @@ def main():
         "rare_cab_frequency_max_ios_files": RARE_CAB_MAX_FILES,
         "ios_cab_ids_total": len(cab_frequency),
         "ios_cab_ids_common_over_threshold": sum(1 for n in cab_frequency.values() if n > RARE_CAB_MAX_FILES),
+        "android_cab_ids_total": len(android_cab_frequency),
+        "android_cab_ids_common_over_threshold": sum(
+            1 for hits in android_cab_frequency.values() if len(hits) > RARE_CAB_MAX_FILES),
         "path_and_name_only_needs_validation": sum(1 for r in mapping if r["status"] == "path_and_name_only_needs_validation"),
         "basename_only_needs_validation": sum(1 for r in mapping if r["status"] == "basename_only_needs_validation"),
         "path_only_needs_validation": sum(1 for r in mapping if r["status"] == "path_only_needs_validation"),
         "no_candidate": sum(1 for r in mapping if r["status"] == "no_candidate"),
         "staged_or_modified": 0,
-        "note": "Read-only index. Cross-name CAB candidates use only IDs found in at most 3 iOS files; common CAB IDs are retained as weak evidence. No candidate proves port compatibility. UnityCN-encrypted bundles are not decrypted or rebuilt."
+        "note": "Read-only index. Cross-name CAB candidates use only IDs found in at most 3 files on BOTH platforms; common CAB IDs remain weak evidence. Same-path/name matches are still listed independently. No candidate proves port compatibility. UnityCN-encrypted bundles are not decrypted or rebuilt."
     }
     (out / "batch_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
