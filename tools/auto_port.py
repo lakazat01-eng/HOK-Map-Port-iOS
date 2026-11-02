@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -26,11 +27,105 @@ def sha256(path):
     return h.hexdigest()
 
 
+def cstring(data, pos):
+    end = data.find(b"\\0", pos)
+    if end < 0:
+        raise ValueError("unterminated UnityFS version string")
+    return data[pos:end].decode("ascii", "replace"), end + 1
+
+
+def unityfs_header(data):
+    """Read the visible UnityFS header and report UnityCN indicators.
+
+    UnityCN-protected bundles can contain transformed header fields. Keep the
+    raw values for diagnostics; do not treat them as validated sizes.
+    """
+    if not data.startswith(UNITYFS):
+        return None
+    try:
+        pos = 8
+        format_version = int.from_bytes(data[pos:pos + 4], "big")
+        pos += 4
+        unity_version, pos = cstring(data, pos)
+        unity_revision, pos = cstring(data, pos)
+        start = pos
+        raw = data[start:start + 20]
+        if len(raw) != 20:
+            raise ValueError("truncated UnityFS header")
+        raw_size = int.from_bytes(raw[0:8], "big")
+        raw_compressed_info = int.from_bytes(raw[8:12], "big")
+        raw_uncompressed_info = int.from_bytes(raw[12:16], "big")
+        flags = int.from_bytes(raw[16:20], "big")
+
+        match = re.match(r"^(\\d+)\\.(\\d+)\\.(\\d+)", unity_revision)
+        mask = None
+        if match:
+            major, minor, patch = map(int, match.groups())
+            old_layout = (
+                major < 2020 or
+                (major == 2020 and minor == 3 and patch <= 34) or
+                (major == 2021 and minor == 3 and patch <= 2) or
+                (major == 2022 and minor == 3 and patch <= 1)
+            )
+            mask = 0x200 if old_layout else 0x400
+
+        encrypted = bool(mask is not None and flags & mask)
+        envelope_offset = start + 20
+        envelope_size = 70 if encrypted else 0
+        aligned_after_envelope = (
+            (envelope_offset + envelope_size + 15) & ~15
+        )
+        compression = flags & 0x3F
+        compression_names = {
+            0: "none", 1: "LZMA", 2: "LZ4", 3: "LZ4HC",
+            4: "LZHAM"
+        }
+        return {
+            "format_version": format_version,
+            "unity_version": unity_version,
+            "unity_revision": unity_revision,
+            "header_offset": start,
+            "header_raw_hex": raw.hex(),
+            "raw_size_field": raw_size,
+            "raw_compressed_info_size": raw_compressed_info,
+            "raw_uncompressed_info_size": raw_uncompressed_info,
+            "flags": flags,
+            "flags_hex": "0x{:X}".format(flags),
+            "compression_id": compression,
+            "compression": compression_names.get(
+                compression, "unknown"
+            ),
+            "blocks_and_directory_combined": bool(flags & 0x40),
+            "blocks_info_at_end": bool(flags & 0x80),
+            "block_info_padding_flag": bool(flags & 0x200),
+            "unitycn_flag_mask": (
+                "0x{:X}".format(mask) if mask is not None else None
+            ),
+            "unitycn_detected": encrypted,
+            "unitycn_envelope_offset": (
+                envelope_offset if encrypted else None
+            ),
+            "unitycn_envelope_size": envelope_size,
+            "aligned_offset_after_unitycn_envelope": (
+                aligned_after_envelope if encrypted else None
+            ),
+            "size_fields_validated": False if encrypted else None,
+            "note": (
+                "UnityCN indicator found; encrypted fields are diagnostic "
+                "only. AES key is required for decryption."
+                if encrypted else
+                "Header fields have not yet been validated against file size."
+            ),
+        }
+    except (IndexError, ValueError, OverflowError) as exc:
+        return {"error": str(exc)}
+
+
 def inspect(path, root):
     try:
         size = path.stat().st_size
         with path.open("rb") as f:
-            head = f.read(64)
+            head = f.read(160)
         if head.startswith(UNITYFS):
             kind = "UnityFS"
         elif head.startswith(MARKER):
@@ -47,6 +142,7 @@ def inspect(path, root):
             "sha256": sha256(path),
             "type": kind,
             "header_hex": head[:48].hex(),
+            "unityfs_header": unityfs_header(head),
         }
     except OSError as exc:
         return {"path": path.relative_to(root).as_posix(), "error": str(exc)}
