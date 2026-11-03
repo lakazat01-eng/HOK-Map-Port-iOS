@@ -1,0 +1,100 @@
+name: Inspect private map archive
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download private archive from repository secret
+        env:
+          MAP_ASSET_URL: ${{ secrets.MAP_ASSET_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MAP_ASSET_URL:-}" ]; then
+            echo "::error::Repository secret MAP_ASSET_URL is missing."
+            exit 1
+          fi
+          curl --fail --location --silent --show-error --retry 3 \
+            --connect-timeout 30 --max-time 1800 \
+            "$MAP_ASSET_URL" -o /tmp/map-input.zip
+          file /tmp/map-input.zip
+          python - <<'PY'
+          import zipfile, os, sys
+          p = "/tmp/map-input.zip"
+          print("Downloaded bytes:", os.path.getsize(p))
+          if not zipfile.is_zipfile(p):
+              print("::error::The URL did not return a ZIP archive.")
+              sys.exit(1)
+          with zipfile.ZipFile(p) as z:
+              bad = z.testzip()
+              if bad:
+                  print("::error::ZIP CRC check failed at:", bad)
+                  sys.exit(1)
+          print("ZIP central directory and CRC checks passed.")
+          PY
+
+      - name: Create read-only archive inventory
+        run: |
+          python - <<'PY'
+          import zipfile, json, csv, os, collections
+          archive = "/tmp/map-input.zip"
+          out = "archive-report"
+          os.makedirs(out, exist_ok=True)
+          rows = []
+          bundles = []
+          top = collections.Counter()
+          total_uncompressed = 0
+          with zipfile.ZipFile(archive) as z:
+              for i in z.infolist():
+                  name = i.filename.replace("\\", "/")
+                  parts = [p for p in name.split("/") if p]
+                  if parts:
+                      top[parts[0]] += 1
+                  total_uncompressed += i.file_size
+                  row = {
+                      "path": name,
+                      "size": i.file_size,
+                      "compressed_size": i.compress_size,
+                      "compression": i.compress_type,
+                      "is_dir": i.is_dir(),
+                  }
+                  rows.append(row)
+                  if name.lower().endswith((".assetbundle", ".bundle", ".bytes")):
+                      with z.open(i) as f:
+                          head = f.read(96)
+                      b = dict(row)
+                      b["header_hex"] = head[:32].hex()
+                      b["header_ascii"] = "".join(chr(x) if 32 <= x < 127 else "." for x in head[:32])
+                      b["starts_unityfs"] = head.startswith(b"UnityFS")
+                      bundles.append(b)
+          summary = {
+              "archive_bytes": os.path.getsize(archive),
+              "file_entries": len(rows),
+              "bundle_like_entries": len(bundles),
+              "uncompressed_total_bytes": total_uncompressed,
+              "top_level_entries": dict(top.most_common()),
+              "bundle_names": [b["path"] for b in bundles],
+          }
+          with open(out + "/summary.json", "w") as f:
+              json.dump(summary, f, indent=2)
+          with open(out + "/files.csv", "w", newline="") as f:
+              w = csv.DictWriter(f, fieldnames=["path","size","compressed_size","compression","is_dir"])
+              w.writeheader(); w.writerows(rows)
+          with open(out + "/bundles.json", "w") as f:
+              json.dump(bundles, f, indent=2)
+          print(json.dumps(summary, indent=2))
+          PY
+
+      - name: Upload inventory only (never upload game assets)
+        uses: actions/upload-artifact@v4
+        with:
+          name: map-archive-inventory
+          path: archive-report/
+          if-no-files-found: error
+          retention-days: 7
