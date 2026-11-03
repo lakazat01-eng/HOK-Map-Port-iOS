@@ -446,5 +446,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: map-scene-header-inspection
-          path: |\n            archive-report/\n            metadata-report.json\n          if-no-files-found: error
+          path: |
+            archive-report/
+            metadata-report.json
+          if-no-files-found: error
           retention-days: 7
