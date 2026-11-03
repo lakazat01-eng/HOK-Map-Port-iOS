@@ -20,9 +20,14 @@ jobs:
             echo "::error::Repository secret MAP_ASSET_URL is missing."
             exit 1
           fi
-          curl --fail --location --silent --show-error --retry 3 \
-            --connect-timeout 30 --max-time 1800 \
-            "$MAP_ASSET_URL" -o /tmp/map-input.zip
+          if echo "$MAP_ASSET_URL" | grep -qi 'drive.google.com'; then
+            python -m pip install --quiet gdown
+            gdown --fuzzy "$MAP_ASSET_URL" -O /tmp/map-input.zip
+          else
+            curl --fail --location --silent --show-error --retry 3 \
+              --connect-timeout 30 --max-time 1800 \
+              "$MAP_ASSET_URL" -o /tmp/map-input.zip
+          fi
           file /tmp/map-input.zip
           python - <<'PY'
           import zipfile, os, sys
