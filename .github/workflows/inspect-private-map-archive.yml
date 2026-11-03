@@ -22,7 +22,7 @@ jobs:
           fi
           if echo "$MAP_ASSET_URL" | grep -qi 'drive.google.com'; then
             python -m pip install --quiet gdown
-            gdown --fuzzy "$MAP_ASSET_URL" -O /tmp/map-input.zip
+            gdown "$MAP_ASSET_URL" -O /tmp/map-input.zip
           else
             curl --fail --location --silent --show-error --retry 3 \
               --connect-timeout 30 --max-time 1800 \
