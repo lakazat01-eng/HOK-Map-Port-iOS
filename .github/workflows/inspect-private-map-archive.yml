@@ -223,10 +223,88 @@ jobs:
           print("ANDROID-ONLY MAP/SCENE SAMPLE", json.dumps([x for x in absent if any(k in x["path"].lower() for k in ("map","scene","terrain","ugui"))][:80], indent=2))
           PY
 
+
+      - name: Inspect target scene bundle headers (read-only)
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import pathlib, hashlib, json, re
+          base = pathlib.Path("/tmp/map-port-input")
+          targets = {
+              "scene_artist_5v5_v4_lv3.assetbundle",
+              "scene_artist_5v5_v4_lv4.assetbundle",
+              "scene_artist_5v5_v4_lv5.assetbundle",
+          }
+          cab_re = re.compile(rb"CAB-([0-9a-fA-F]{32})")
+          def cstring(buf, pos):
+              end = buf.find(b"\\0", pos)
+              if end < 0: raise ValueError("unterminated string")
+              return buf[pos:end].decode("ascii", "replace"), end + 1
+          rows = []
+          for platform in ("android", "ios"):
+              root = base / platform
+              for path in sorted(root.rglob("*")):
+                  if not path.is_file() or path.name.lower() not in targets:
+                      continue
+                  with path.open("rb") as f:
+                      head = f.read(512)
+                  row = {
+                      "platform": platform,
+                      "path": path.relative_to(root).as_posix(),
+                      "size": path.stat().st_size,
+                      "header_hex_64": head[:64].hex(),
+                      "header_ascii_64": "".join(chr(x) if 32 <= x < 127 else "." for x in head[:64]),
+                      "starts_UnityFS": head.startswith(b"UnityFS\\0"),
+                  }
+                  if row["starts_UnityFS"]:
+                      try:
+                          pos = 8
+                          row["format_version"] = int.from_bytes(head[pos:pos+4], "big"); pos += 4
+                          row["unity_version"], pos = cstring(head, pos)
+                          row["unity_revision"], pos = cstring(head, pos)
+                          fixed = head[pos:pos+20]
+                          row["fixed_header_offset"] = pos
+                          row["fixed_header_hex"] = fixed.hex()
+                          if len(fixed) == 20:
+                              row["declared_bundle_size"] = int.from_bytes(fixed[0:8], "big")
+                              row["compressed_blocks_info_size"] = int.from_bytes(fixed[8:12], "big")
+                              row["uncompressed_blocks_info_size"] = int.from_bytes(fixed[12:16], "big")
+                              row["flags"] = int.from_bytes(fixed[16:20], "big")
+                              row["flags_hex"] = hex(row["flags"])
+                              row["compression_id"] = row["flags"] & 0x3f
+                          else:
+                              row["parse_error"] = "short fixed header"
+                      except Exception as exc:
+                          row["parse_error"] = str(exc)
+                  # Scan compact CAB tokens without extracting or modifying payloads.
+                  cabs = set()
+                  carry = b""
+                  with path.open("rb") as f:
+                      while True:
+                          block = f.read(1024*1024)
+                          if not block: break
+                          data = carry + block
+                          cabs.update(x.decode("ascii").lower() for x in cab_re.findall(data))
+                          carry = data[-64:]
+                  row["cab_ids"] = sorted(cabs)
+                  rows.append(row)
+                  print("SCENE_HEADER", json.dumps(row, sort_keys=True))
+          out = pathlib.Path("archive-report/scene-header-inspection.json")
+          out.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+          print("SCENE HEADER COUNTS", json.dumps({
+              "target_files_found": len(rows),
+              "by_platform": {p: sum(1 for x in rows if x["platform"] == p) for p in ("android","ios")},
+              "unityfs": sum(1 for x in rows if x["starts_UnityFS"]),
+              "non_unityfs": sum(1 for x in rows if not x["starts_UnityFS"]),
+          }, indent=2))
+          if not rows:
+              raise SystemExit("No target scene bundles found; inspect archive paths before proceeding.")
+          PY
+
       - name: Upload inventory only (never upload game assets)
         uses: actions/upload-artifact@v4
         with:
-          name: map-archive-inventory
+          name: map-scene-header-inspection
           path: archive-report/
           if-no-files-found: error
           retention-days: 7
