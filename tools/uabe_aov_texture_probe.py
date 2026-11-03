@@ -5,7 +5,9 @@ Only metadata and texture fingerprints are written to the report. No game assets
 or rebuilt bundles are exported.
 """
 import collections
+import contextlib
 import hashlib
+import io
 import json
 import pathlib
 import re
@@ -127,7 +129,46 @@ for platform in ("android", "ios"):
             "named_objects_sample": [],
         }
         try:
-            env = UnityPy_AOV.load(str(path))
+            # UnityPy_AOV.Environment.load_file() catches BundleFile constructor
+            # exceptions and prints them before returning a fallback reader. Capture
+            # that diagnostic: otherwise a failed bundle is misreported as no_objects.
+            captured_out = io.StringIO()
+            captured_err = io.StringIO()
+            with contextlib.redirect_stdout(captured_out), contextlib.redirect_stderr(captured_err):
+                env = UnityPy_AOV.load(str(path))
+            init_diagnostic = (captured_out.getvalue() + captured_err.getvalue()).strip()
+            env_files = getattr(env, "files", {}) or {}
+            row["environment_file_count"] = len(env_files)
+            row["environment_file_types"] = sorted({
+                type(value).__name__ for value in env_files.values()
+            })
+            row["environment_files_sample"] = [
+                {"name": str(name), "type": type(value).__name__}
+                for name, value in list(env_files.items())[:8]
+            ]
+            if init_diagnostic:
+                row["initialization_diagnostic"] = init_diagnostic[-1800:]
+            if not env_files:
+                row["load"] = "initialization_failed"
+                row["error_type"] = "BundleFileInitializationFailed"
+                row["error"] = (
+                    init_diagnostic[-1400:]
+                    if init_diagnostic
+                    else "UnityPy_AOV returned an Environment with no registered files"
+                )
+                platform_report["failed"] += 1
+                platform_report["candidate_bundles"].append(row)
+                print("UABE_AOV_BUNDLE", json.dumps({
+                    "platform": platform,
+                    "path": rel,
+                    "load": row["load"],
+                    "root_file_type": None,
+                    "object_count": 0,
+                    "texture_count": 0,
+                    "raw_header": row["raw_header"],
+                    "error": row["error"],
+                }, ensure_ascii=False))
+                continue
             root_file = getattr(env, "file", None)
             row["root_file_type"] = type(root_file).__name__ if root_file is not None else None
             row["root_nested_file_count"] = len(getattr(root_file, "files", {}) or {})
