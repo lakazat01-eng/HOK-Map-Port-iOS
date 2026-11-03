@@ -327,7 +327,7 @@ jobs:
               return "OTHER"
           def inspect(p,root):
               with p.open("rb") as f: head=f.read(128)
-              unityfs=head.startswith(b"UnityFS\\0")
+              unityfs=head.startswith(b"UnityFS")
               revision=None; flags=None; protected=None; note="non_UnityFS_or_other"
               if unityfs:
                   try:
@@ -348,7 +348,9 @@ jobs:
                   except Exception: note="UnityFS_header_parse_incomplete"
               return {"path":p.relative_to(root).as_posix(),"size":p.stat().st_size,"sha256":digest(p),
                       "unityfs":unityfs,"unity_revision":revision,"flags":flags,
-                      "unitycn_indicator_heuristic":protected,"header_note":note}
+                      "unitycn_indicator_heuristic":protected,"header_note":note,
+                      "header_hex_32":head[:32].hex(),
+                      "header_ascii_32":"".join(chr(b) if 32<=b<127 else "." for b in head[:32])}
           ios={}
           for root in find_tiers("ios"):
               for p in root.rglob("*"):
