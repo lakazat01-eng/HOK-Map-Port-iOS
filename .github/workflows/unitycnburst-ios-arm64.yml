@@ -17,10 +17,10 @@ jobs:
       - name: Checkout workspace
         uses: actions/checkout@v4
 
-      - name: Install Zig 0.15.1
+      - name: Install Zig 0.15.2
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.1
+          version: 0.15.2
 
       - name: Checkout upstream UnityCNBurst
         uses: actions/checkout@v4
@@ -37,14 +37,16 @@ jobs:
           LIBSYSTEM="$IOS_SDK/usr/lib/libSystem.tbd"
           test -f "$LIBSYSTEM" || { echo "::error::Missing $LIBSYSTEM"; exit 1; }
 
-          ZIG_BIN="$(command -v zig)"
+          ZIG_BIN="$(python3 -c 'import os,shutil; print(os.path.realpath(shutil.which("zig")))')"
           ZIG_ROOT="$(cd "$(dirname "$ZIG_BIN")" && pwd)"
           ZIG_LIB_DIR="$ZIG_ROOT/lib"
-          test -d "$ZIG_LIB_DIR" || { echo "::error::Zig lib directory not found"; exit 1; }
+          test -d "$ZIG_LIB_DIR" || { echo "::error::Zig lib directory not found: $ZIG_LIB_DIR"; exit 1; }
 
           mkdir -p "$ZIG_LIB_DIR/libc/darwin"
           cp "$LIBSYSTEM" "$ZIG_LIB_DIR/libc/darwin/libSystem.tbd"
-          echo "Prepared vendored libSystem stub:"
+          echo "Zig binary: $ZIG_BIN"
+          echo "Zig library directory: $ZIG_LIB_DIR"
+          echo "Prepared vendored libSystem:"
           ls -l "$ZIG_LIB_DIR/libc/darwin/libSystem.tbd"
 
       - name: Build for physical iOS arm64
@@ -52,10 +54,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Zig: $(zig version)"
-          # Do not pass --sysroot: Zig's Mach-O linker then uses the vendored
-          # libSystem.tbd prepared above instead of its SDK-layout lookup.
-          zig build -Dtarget=aarch64-ios -Doptimize=ReleaseFast
+          ZIG_BIN="$(python3 -c 'import os,shutil; print(os.path.realpath(shutil.which("zig")))')"
+          ZIG_ROOT="$(cd "$(dirname "$ZIG_BIN")" && pwd)"
+          ZIG_LIB_DIR="$ZIG_ROOT/lib"
+          echo "Zig: $("$ZIG_BIN" version)"
+          # Explicit -L forces Zig's Mach-O resolver to inspect the directory
+          # containing the prepared libSystem.tbd instead of relying on SDK inference.
+          mkdir -p zig-out/bin
+          "$ZIG_BIN" build-exe src/main.zig -O ReleaseFast -target aarch64-ios \
+            -L "$ZIG_LIB_DIR/libc/darwin" \
+            -femit-bin=zig-out/bin/UnityCNBurst
           test -f zig-out/bin/UnityCNBurst
           file zig-out/bin/UnityCNBurst
           otool -l zig-out/bin/UnityCNBurst | grep -A5 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_IPHONEOS' || true
