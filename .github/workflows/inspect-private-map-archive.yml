@@ -61,8 +61,8 @@ jobs:
           p=pathlib.Path("/tmp/global-metadata.dat")
           if not p.is_file() or p.stat().st_size < 1024:
               raise SystemExit("Downloaded file is missing or implausibly small; check Drive sharing and file URL.")
-          h=hashlib.sha256(p.read_bytes()).hexdigest()
-          report={"filename":p.name,"size":p.stat().st_size,"sha256":h,"header_hex":p.read_bytes()[:32].hex()}
+          raw=p.read_bytes()
+          report={"filename":p.name,"size":p.stat().st_size,"sha256":hashlib.sha256(raw).hexdigest(),"header_hex":raw[:32].hex()}
           pathlib.Path("metadata-report.json").write_text(json.dumps(report,indent=2))
           print("METADATA_INPUT",json.dumps(report))
           PY
@@ -70,258 +70,141 @@ jobs:
       - name: Create read-only archive inventory
         run: |
           python - <<'PY'
-          import zipfile, json, csv, os, collections
-          archive = "/tmp/map-input.zip"
-          out = "archive-report"
-          os.makedirs(out, exist_ok=True)
-          rows = []
-          bundles = []
-          top = collections.Counter()
-          total_uncompressed = 0
+          import zipfile, json, csv, os, collections, tempfile
+          archive="/tmp/map-input.zip"; out="archive-report"; os.makedirs(out,exist_ok=True)
+          rows=[]; bundles=[]; top=collections.Counter(); total=0
           with zipfile.ZipFile(archive) as z:
               for i in z.infolist():
-                  name = i.filename.replace("\\", "/")
-                  parts = [p for p in name.split("/") if p]
-                  if parts:
-                      top[parts[0]] += 1
-                  total_uncompressed += i.file_size
-                  row = {
-                      "path": name,
-                      "size": i.file_size,
-                      "compressed_size": i.compress_size,
-                      "compression": i.compress_type,
-                      "is_dir": i.is_dir(),
-                  }
+                  name=i.filename.replace("\\","/"); parts=[p for p in name.split("/") if p]
+                  if parts: top[parts[0]]+=1
+                  total+=i.file_size
+                  row={"path":name,"size":i.file_size,"compressed_size":i.compress_size,"compression":i.compress_type,"is_dir":i.is_dir()}
                   rows.append(row)
-                  if name.lower().endswith((".assetbundle", ".bundle", ".bytes")):
-                      with z.open(i) as f:
-                          head = f.read(96)
-                      b = dict(row)
-                      b["header_hex"] = head[:32].hex()
-                      b["header_ascii"] = "".join(chr(x) if 32 <= x < 127 else "." for x in head[:32])
-                      b["starts_unityfs"] = head.startswith(b"UnityFS")
-                      bundles.append(b)
-          summary = {
-              "archive_bytes": os.path.getsize(archive),
-              "file_entries": len(rows),
-              "bundle_like_entries": len(bundles),
-              "uncompressed_total_bytes": total_uncompressed,
-              "top_level_entries": dict(top.most_common()),
-              "bundle_names": [b["path"] for b in bundles],
-          }
-          with open(out + "/summary.json", "w") as f:
-              json.dump(summary, f, indent=2)
-          with open(out + "/files.csv", "w", newline="") as f:
-              w = csv.DictWriter(f, fieldnames=["path","size","compressed_size","compression","is_dir"])
-              w.writeheader(); w.writerows(rows)
-          with open(out + "/bundles.json", "w") as f:
-              json.dump(bundles, f, indent=2)
-          # Inspect nested ZIPs one level deep without extracting game assets.
-          import tempfile
-          nested_rows = []
-          nested_bundles = []
+                  if name.lower().endswith((".assetbundle",".bundle",".bytes")):
+                      with z.open(i) as f: head=f.read(96)
+                      b=dict(row); b["header_hex"]=head[:32].hex(); b["header_ascii"]="".join(chr(x) if 32<=x<127 else "." for x in head[:32]); b["starts_unityfs"]=head.startswith(b"UnityFS"); bundles.append(b)
+          summary={"archive_bytes":os.path.getsize(archive),"file_entries":len(rows),"bundle_like_entries":len(bundles),"uncompressed_total_bytes":total,"top_level_entries":dict(top.most_common()),"bundle_names":[b["path"] for b in bundles]}
+          for name,data in (("summary.json",summary),("bundles.json",bundles)):
+              open(out+"/"+name,"w").write(json.dumps(data,indent=2))
+          with open(out+"/files.csv","w",newline="") as f:
+              w=csv.DictWriter(f,fieldnames=["path","size","compressed_size","compression","is_dir"]); w.writeheader(); w.writerows(rows)
+          nested_rows=[]; nested_bundles=[]
           with zipfile.ZipFile(archive) as outer:
               for item in outer.infolist():
-                  if item.is_dir() or not item.filename.lower().endswith(".zip"):
-                      continue
+                  if item.is_dir() or not item.filename.lower().endswith(".zip"): continue
                   with tempfile.NamedTemporaryFile(suffix=".zip") as tmp:
-                      with outer.open(item) as src, open(tmp.name, "wb") as dst:
-                          while True:
-                              chunk = src.read(8 * 1024 * 1024)
-                              if not chunk:
-                                  break
-                              dst.write(chunk)
+                      with outer.open(item) as src,open(tmp.name,"wb") as dst:
+                          for chunk in iter(lambda:src.read(8*1024*1024),b""): dst.write(chunk)
                       if not zipfile.is_zipfile(tmp.name):
-                          nested_rows.append({"archive": item.filename, "error": "not a valid ZIP"})
-                          continue
+                          nested_rows.append({"archive":item.filename,"error":"not a valid ZIP"}); continue
                       with zipfile.ZipFile(tmp.name) as inner:
-                          bad = inner.testzip()
+                          bad=inner.testzip()
                           for sub in inner.infolist():
-                              path = sub.filename.replace("\\", "/")
-                              row = {
-                                  "archive": item.filename,
-                                  "path": path,
-                                  "size": sub.file_size,
-                                  "compressed_size": sub.compress_size,
-                                  "is_dir": sub.is_dir(),
-                              }
+                              path=sub.filename.replace("\\","/")
+                              row={"archive":item.filename,"path":path,"size":sub.file_size,"compressed_size":sub.compress_size,"is_dir":sub.is_dir()}
                               nested_rows.append(row)
-                              if not sub.is_dir() and path.lower().endswith((".assetbundle", ".bundle", ".bytes")):
-                                  with inner.open(sub) as sf:
-                                      head = sf.read(96)
-                                  b = dict(row)
-                                  b["header_hex"] = head[:32].hex()
-                                  b["header_ascii"] = "".join(chr(x) if 32 <= x < 127 else "." for x in head[:32])
-                                  b["starts_unityfs"] = head.startswith(b"UnityFS")
-                                  nested_bundles.append(b)
-                          print("Nested archive:", item.filename, "entries:", len(inner.infolist()), "crc_error:", bad)
-          with open(out + "/nested-files.csv", "w", newline="") as f:
-              fields = ["archive","path","size","compressed_size","is_dir","error"]
-              w = csv.DictWriter(f, fieldnames=fields)
-              w.writeheader(); w.writerows(nested_rows)
-          with open(out + "/nested-bundles.json", "w") as f:
-              json.dump(nested_bundles, f, indent=2)
-          print("Nested ZIP entries:", len(nested_rows), "nested bundle-like files:", len(nested_bundles))
-          print(json.dumps(summary, indent=2))
+                              if not sub.is_dir() and path.lower().endswith((".assetbundle",".bundle",".bytes")):
+                                  with inner.open(sub) as sf: head=sf.read(96)
+                                  b=dict(row); b["header_hex"]=head[:32].hex(); b["header_ascii"]="".join(chr(x) if 32<=x<127 else "." for x in head[:32]); b["starts_unityfs"]=head.startswith(b"UnityFS"); nested_bundles.append(b)
+                          print("Nested archive:",item.filename,"entries:",len(inner.infolist()),"crc_error:",bad)
+          with open(out+"/nested-files.csv","w",newline="") as f:
+              w=csv.DictWriter(f,fieldnames=["archive","path","size","compressed_size","is_dir","error"]); w.writeheader(); w.writerows(nested_rows)
+          open(out+"/nested-bundles.json","w").write(json.dumps(nested_bundles,indent=2))
+          print("Nested ZIP entries:",len(nested_rows),"nested bundle-like files:",len(nested_bundles))
+          print(json.dumps(summary,indent=2))
           PY
 
       - name: Compare Android and iOS map assets
         run: |
           set -euo pipefail
           python - <<'PY'
-          import zipfile, tempfile, os, shutil, pathlib, json, hashlib, collections
-          outer_path = "/tmp/map-input.zip"
-          work = pathlib.Path("/tmp/map-port-input")
-          shutil.rmtree(work, ignore_errors=True)
-          work.mkdir(parents=True)
+          import zipfile, shutil, pathlib, json, hashlib
+          outer_path="/tmp/map-input.zip"; work=pathlib.Path("/tmp/map-port-input")
+          shutil.rmtree(work,ignore_errors=True); work.mkdir(parents=True)
           with zipfile.ZipFile(outer_path) as outer:
               for entry in outer.infolist():
-                  low = entry.filename.lower()
-                  if entry.is_dir() or not low.endswith(".zip"):
-                      continue
-                  label = "ios" if "ios" in low else "android" if ("hok" in low or "andr" in low) else None
-                  if not label:
-                      continue
-                  target = work / label
-                  target.mkdir(parents=True, exist_ok=True)
-                  with outer.open(entry) as src, zipfile.ZipFile(src) as inner:
-                      inner.extractall(target)
-                  print("Extracted", entry.filename, "to", target)
-          # Report the actual extracted tree and discover Resources/Extra roots.
-          for platform in ("android", "ios"):
-              root = work / platform
-              print("\\nPLATFORM", platform)
-              for p in sorted(root.rglob("*")):
-                  if p.is_dir() and p.name.lower() in ("resources", "extra"):
-                      print("ROOT", p.relative_to(root).as_posix())
-          # Pair file paths and hashes across Android/iOS tiers. This first pass
-          # stages only exact binary matches; all changed Unity bundles remain untouched.
+                  low=entry.filename.lower()
+                  if entry.is_dir() or not low.endswith(".zip"): continue
+                  label="ios" if "ios" in low else "android" if ("hok" in low or "andr" in low) else None
+                  if not label: continue
+                  target=work/label; target.mkdir(parents=True,exist_ok=True)
+                  with outer.open(entry) as src,zipfile.ZipFile(src) as inner: inner.extractall(target)
+                  print("Extracted",entry.filename,"to",target)
+          for platform in ("android","ios"):
+              print("\\nPLATFORM",platform)
+              for p in sorted((work/platform).rglob("*")):
+                  if p.is_dir() and p.name.lower() in ("resources","extra"): print("ROOT",p.relative_to(work/platform).as_posix())
           def files_under(root):
-              out = {}
+              out={}
               if root.exists():
                   for p in root.rglob("*"):
                       if p.is_file():
-                          h = hashlib.sha256()
+                          h=hashlib.sha256()
                           with p.open("rb") as f:
-                              for chunk in iter(lambda: f.read(1024*1024), b""):
-                                  h.update(chunk)
-                          out[p.relative_to(root).as_posix()] = (p.stat().st_size, h.hexdigest(), p)
+                              for chunk in iter(lambda:f.read(1024*1024),b""): h.update(chunk)
+                          out[p.relative_to(root).as_posix()]=(p.stat().st_size,h.hexdigest(),p)
               return out
           def find_dirs(platform):
-              base = work / platform
-              resources = [p for p in base.rglob("Resources") if p.is_dir()]
-              extras = [p for p in base.rglob("Extra") if p.is_dir()]
-              return resources, extras
-          ar, ae = find_dirs("android")
-          ir, ie = find_dirs("ios")
-          print("DISCOVERED", json.dumps({
-              "android_resources": [str(x.relative_to(work/"android")) for x in ar],
-              "android_extra": [str(x.relative_to(work/"android")) for x in ae],
-              "ios_resources": [str(x.relative_to(work/"ios")) for x in ir],
-              "ios_extra": [str(x.relative_to(work/"ios")) for x in ie],
-          }, indent=2))
-          # Compare every Android Resources/Extra tree against both iOS tiers.
-          ios_index = {}
-          for tier, dirs in (("ios_resources", ir), ("ios_extra", ie)):
+              base=work/platform
+              return [p for p in base.rglob("Resources") if p.is_dir()],[p for p in base.rglob("Extra") if p.is_dir()]
+          ar,ae=find_dirs("android"); ir,ie=find_dirs("ios"); ios_index={}
+          for tier,dirs in (("ios_resources",ir),("ios_extra",ie)):
               for d in dirs:
-                  for rel, info in files_under(d).items():
-                      ios_index.setdefault((rel, info[1]), []).append((tier, d, info))
-          matched, changed, absent = [], [], []
-          for tier, dirs in (("android_resources", ar), ("android_extra", ae)):
+                  for rel,info in files_under(d).items(): ios_index.setdefault((rel,info[1]),[]).append((tier,d,info))
+          matched=[]; changed=[]; absent=[]
+          for tier,dirs in (("android_resources",ar),("android_extra",ae)):
               for d in dirs:
-                  for rel, info in files_under(d).items():
-                      key = (rel, info[1])
-                      if key in ios_index:
-                          matched.append({"source":tier,"path":rel,"size":info[0],"target_tiers":[x[0] for x in ios_index[key]]})
-                      elif any(k[0] == rel for k in ios_index):
-                          changed.append({"source":tier,"path":rel,"size":info[0],"status":"same_path_different_hash"})
-                      else:
-                          absent.append({"source":tier,"path":rel,"size":info[0]})
-          result = {"exact_matches":matched,"same_path_changed":changed,"android_only":absent,
-                    "counts":{"exact_matches":len(matched),"same_path_changed":len(changed),"android_only":len(absent)}}
+                  for rel,info in files_under(d).items():
+                      key=(rel,info[1])
+                      if key in ios_index: matched.append({"source":tier,"path":rel,"size":info[0],"target_tiers":[x[0] for x in ios_index[key]]})
+                      elif any(k[0]==rel for k in ios_index): changed.append({"source":tier,"path":rel,"size":info[0],"status":"same_path_different_hash"})
+                      else: absent.append({"source":tier,"path":rel,"size":info[0]})
+          result={"exact_matches":matched,"same_path_changed":changed,"android_only":absent,"counts":{"exact_matches":len(matched),"same_path_changed":len(changed),"android_only":len(absent)}}
           pathlib.Path("archive-report/port-comparison.json").write_text(json.dumps(result,indent=2))
-          print("PORT COMPARISON", json.dumps(result["counts"], indent=2))
-          print("EXACT MATCH SAMPLE", json.dumps(matched[:40], indent=2))
-          print("CHANGED MAP/SCENE SAMPLE", json.dumps([x for x in changed if any(k in x["path"].lower() for k in ("map","scene","terrain","ugui"))][:80], indent=2))
-          print("ANDROID-ONLY MAP/SCENE SAMPLE", json.dumps([x for x in absent if any(k in x["path"].lower() for k in ("map","scene","terrain","ugui"))][:80], indent=2))
+          print("PORT COMPARISON",json.dumps(result["counts"],indent=2))
+          print("EXACT MATCH SAMPLE",json.dumps(matched[:40],indent=2))
+          print("CHANGED MAP/SCENE SAMPLE",json.dumps([x for x in changed if any(k in x["path"].lower() for k in ("map","scene","terrain","ugui"))][:80],indent=2))
+          print("ANDROID-ONLY MAP/SCENE SAMPLE",json.dumps([x for x in absent if any(k in x["path"].lower() for k in ("map","scene","terrain","ugui"))][:80],indent=2))
           PY
-
 
       - name: Inspect target scene bundle headers (read-only)
         run: |
           set -euo pipefail
           python - <<'PY'
-          import pathlib, hashlib, json, re
-          base = pathlib.Path("/tmp/map-port-input")
-          targets = {
-              "scene_artist_5v5_v4_lv3.assetbundle",
-              "scene_artist_5v5_v4_lv4.assetbundle",
-              "scene_artist_5v5_v4_lv5.assetbundle",
-          }
-          cab_re = re.compile(rb"CAB-([0-9a-fA-F]{32})")
-          def cstring(buf, pos):
-              end = buf.find(b"\0", pos)
-              if end < 0: raise ValueError("unterminated string")
-              return buf[pos:end].decode("ascii", "replace"), end + 1
-          rows = []
-          for platform in ("android", "ios"):
-              root = base / platform
+          import pathlib, json, re
+          base=pathlib.Path("/tmp/map-port-input")
+          targets={"scene_artist_5v5_v4_lv3.assetbundle","scene_artist_5v5_v4_lv4.assetbundle","scene_artist_5v5_v4_lv5.assetbundle"}
+          cab_re=re.compile(rb"CAB-([0-9a-fA-F]{32})")
+          def cstring(buf,pos):
+              end=buf.find(b"\\0",pos)
+              if end<0: raise ValueError("unterminated string")
+              return buf[pos:end].decode("ascii","replace"),end+1
+          rows=[]
+          for platform in ("android","ios"):
+              root=base/platform
               for path in sorted(root.rglob("*")):
-                  if not path.is_file() or path.name.lower() not in targets:
-                      continue
-                  with path.open("rb") as f:
-                      head = f.read(512)
-                  row = {
-                      "platform": platform,
-                      "path": path.relative_to(root).as_posix(),
-                      "size": path.stat().st_size,
-                      "header_hex_64": head[:64].hex(),
-                      "header_ascii_64": "".join(chr(x) if 32 <= x < 127 else "." for x in head[:64]),
-                      "starts_UnityFS": head.startswith(b"UnityFS\0"),
-                  }
+                  if not path.is_file() or path.name.lower() not in targets: continue
+                  with path.open("rb") as f: head=f.read(512)
+                  row={"platform":platform,"path":path.relative_to(root).as_posix(),"size":path.stat().st_size,"header_hex_64":head[:64].hex(),"header_ascii_64":"".join(chr(x) if 32<=x<127 else "." for x in head[:64]),"starts_UnityFS":head.startswith(b"UnityFS\\0")}
                   if row["starts_UnityFS"]:
                       try:
-                          pos = 8
-                          row["format_version"] = int.from_bytes(head[pos:pos+4], "big"); pos += 4
-                          row["unity_version"], pos = cstring(head, pos)
-                          row["unity_revision"], pos = cstring(head, pos)
-                          fixed = head[pos:pos+20]
-                          row["fixed_header_offset"] = pos
-                          row["fixed_header_hex"] = fixed.hex()
-                          if len(fixed) == 20:
-                              row["declared_bundle_size"] = int.from_bytes(fixed[0:8], "big")
-                              row["compressed_blocks_info_size"] = int.from_bytes(fixed[8:12], "big")
-                              row["uncompressed_blocks_info_size"] = int.from_bytes(fixed[12:16], "big")
-                              row["flags"] = int.from_bytes(fixed[16:20], "big")
-                              row["flags_hex"] = hex(row["flags"])
-                              row["compression_id"] = row["flags"] & 0x3f
-                          else:
-                              row["parse_error"] = "short fixed header"
-                      except Exception as exc:
-                          row["parse_error"] = str(exc)
-                  # Scan compact CAB tokens without extracting or modifying payloads.
-                  cabs = set()
-                  carry = b""
+                          pos=8; row["format_version"]=int.from_bytes(head[pos:pos+4],"big"); pos+=4
+                          row["unity_version"],pos=cstring(head,pos); row["unity_revision"],pos=cstring(head,pos)
+                          fixed=head[pos:pos+20]; row["fixed_header_offset"]=pos; row["fixed_header_hex"]=fixed.hex()
+                          if len(fixed)==20:
+                              row["declared_bundle_size"]=int.from_bytes(fixed[0:8],"big"); row["compressed_blocks_info_size"]=int.from_bytes(fixed[8:12],"big"); row["uncompressed_blocks_info_size"]=int.from_bytes(fixed[12:16],"big"); row["flags"]=int.from_bytes(fixed[16:20],"big"); row["flags_hex"]=hex(row["flags"]); row["compression_id"]=row["flags"]&0x3f
+                          else: row["parse_error"]="short fixed header"
+                      except Exception as exc: row["parse_error"]=str(exc)
+                  cabs=set(); carry=b""
                   with path.open("rb") as f:
                       while True:
-                          block = f.read(1024*1024)
+                          block=f.read(1024*1024)
                           if not block: break
-                          data = carry + block
-                          cabs.update(x.decode("ascii").lower() for x in cab_re.findall(data))
-                          carry = data[-64:]
-                  row["cab_ids"] = sorted(cabs)
-                  rows.append(row)
-                  print("SCENE_HEADER", json.dumps(row, sort_keys=True))
-          out = pathlib.Path("archive-report/scene-header-inspection.json")
-          out.write_text(json.dumps(rows, indent=2), encoding="utf-8")
-          print("SCENE HEADER COUNTS", json.dumps({
-              "target_files_found": len(rows),
-              "by_platform": {p: sum(1 for x in rows if x["platform"] == p) for p in ("android","ios")},
-              "unityfs": sum(1 for x in rows if x["starts_UnityFS"]),
-              "non_unityfs": sum(1 for x in rows if not x["starts_UnityFS"]),
-          }, indent=2))
-          if not rows:
-              raise SystemExit("No target scene bundles found; inspect archive paths before proceeding.")
+                          data=carry+block; cabs.update(x.decode("ascii").lower() for x in cab_re.findall(data)); carry=data[-64:]
+                  row["cab_ids"]=sorted(cabs); rows.append(row); print("SCENE_HEADER",json.dumps(row,sort_keys=True))
+          pathlib.Path("archive-report/scene-header-inspection.json").write_text(json.dumps(rows,indent=2),encoding="utf-8")
+          print("SCENE HEADER COUNTS",json.dumps({"target_files_found":len(rows),"by_platform":{p:sum(1 for x in rows if x["platform"]==p) for p in ("android","ios")},"unityfs":sum(1 for x in rows if x["starts_UnityFS"]),"non_unityfs":sum(1 for x in rows if not x["starts_UnityFS"])},indent=2))
+          if not rows: raise SystemExit("No target scene bundles found; inspect archive paths before proceeding.")
           PY
 
       - name: Rank Android assets for practical port attempts (read-only)
@@ -331,8 +214,7 @@ jobs:
           import pathlib, hashlib, json, re, collections
           base=pathlib.Path("/tmp/map-port-input")
           def find_tiers(platform):
-              root=base/platform
-              return [p for p in root.rglob("*") if p.is_dir() and p.name.lower() in ("resources","extra")]
+              return [p for p in (base/platform).rglob("*") if p.is_dir() and p.name.lower() in ("resources","extra")]
           def digest(p):
               h=hashlib.sha256()
               with p.open("rb") as f:
@@ -350,30 +232,21 @@ jobs:
               return "OTHER"
           def inspect(p,root):
               with p.open("rb") as f: head=f.read(128)
-              unityfs=head.startswith(b"UnityFS")
-              revision=None; flags=None; protected=None; note="non_UnityFS_or_other"
+              unityfs=head.startswith(b"UnityFS"); revision=None; flags=None; protected=None; note="non_UnityFS_or_other"
               if unityfs:
                   try:
-                      pos=8
-                      _fmt=int.from_bytes(head[pos:pos+4],"big"); pos+=4
+                      pos=8; _fmt=int.from_bytes(head[pos:pos+4],"big"); pos+=4
                       def cs(buf,pos):
                           e=buf.index(0,pos); return buf[pos:e].decode("ascii","replace"),e+1
-                      _,pos=cs(head,pos); revision,pos=cs(head,pos)
-                      fixed=head[pos:pos+20]
+                      _,pos=cs(head,pos); revision,pos=cs(head,pos); fixed=head[pos:pos+20]
                       if len(fixed)==20:
-                          flags=int.from_bytes(fixed[16:20],"big")
-                          m=re.match(r"^(\\d+)\\.(\\d+)\\.(\\d+)",revision)
+                          flags=int.from_bytes(fixed[16:20],"big"); m=re.match(r"^(\\d+)\\.(\\d+)\\.(\\d+)",revision)
                           if m:
-                              major,minor,patch=map(int,m.groups())
-                              mask=0x200 if (major<2020 or (major==2020 and minor==3 and patch<=34) or (major==2021 and minor==3 and patch<=2) or (major==2022 and minor==3 and patch<=1)) else 0x400
+                              major,minor,patch=map(int,m.groups()); mask=0x200 if (major<2020 or (major==2020 and minor==3 and patch<=34) or (major==2021 and minor==3 and patch<=2) or (major==2022 and minor==3 and patch<=1)) else 0x400
                               protected=bool(flags&mask)
                           note="header heuristic only; UnityCN not decrypted"
                   except Exception: note="UnityFS_header_parse_incomplete"
-              return {"path":p.relative_to(root).as_posix(),"size":p.stat().st_size,"sha256":digest(p),
-                      "unityfs":unityfs,"unity_revision":revision,"flags":flags,
-                      "unitycn_indicator_heuristic":protected,"header_note":note,
-                      "header_hex_32":head[:32].hex(),
-                      "header_ascii_32":"".join(chr(b) if 32<=b<127 else "." for b in head[:32])}
+              return {"path":p.relative_to(root).as_posix(),"size":p.stat().st_size,"sha256":digest(p),"unityfs":unityfs,"unity_revision":revision,"flags":flags,"unitycn_indicator_heuristic":protected,"header_note":note,"header_hex_32":head[:32].hex(),"header_ascii_32":"".join(chr(b) if 32<=b<127 else "." for b in head[:32])}
           ios={}
           for root in find_tiers("ios"):
               for p in root.rglob("*"):
@@ -383,23 +256,15 @@ jobs:
           for root in find_tiers("android"):
               for p in root.rglob("*"):
                   if not p.is_file(): continue
-                  x=inspect(p,root); hits=ios.get(x["path"],[])
-                  x["category"]=category(x["path"])
-                  x["ios_same_path_count"]=len(hits)
-                  x["ios_same_path_hash_match"]=any(h["sha256"]==x["sha256"] for h in hits)
-                  x["ios_same_path_sizes"]=[h["size"] for h in hits]
-                  x["status"]="identical" if x["ios_same_path_hash_match"] else ("same_path_changed" if hits else "android_only")
-                  rows.append(x)
+                  x=inspect(p,root); hits=ios.get(x["path"],[]); x["category"]=category(x["path"]); x["ios_same_path_count"]=len(hits); x["ios_same_path_hash_match"]=any(h["sha256"]==x["sha256"] for h in hits); x["ios_same_path_sizes"]=[h["size"] for h in hits]; x["status"]="identical" if x["ios_same_path_hash_match"] else ("same_path_changed" if hits else "android_only"); rows.append(x)
           priority={"MINIMAP_UI":0,"MONSTERS":1,"MINIONS":2,"TOWERS":3,"MAP_OTHER":4,"OTHER_UI":5,"SCENE_TERRAIN":6,"OTHER":7}
           rows.sort(key=lambda x:(priority[x["category"]],x["unitycn_indicator_heuristic"] is True,x["size"]))
-          counts=collections.Counter((x["category"],x["status"]) for x in rows)
-          report={"total_android_files":len(rows),"counts":{a+"/"+b:n for (a,b),n in sorted(counts.items())},"ranked_candidates":rows}
+          counts=collections.Counter((x["category"],x["status"]) for x in rows); report={"total_android_files":len(rows),"counts":{a+"/"+b:n for (a,b),n in sorted(counts.items())},"ranked_candidates":rows}
           pathlib.Path("archive-report/port-candidates.json").write_text(json.dumps(report,indent=2),encoding="utf-8")
           print("DISCOVERED TIERS",json.dumps({p:[str(x.relative_to(base/p)) for x in find_tiers(p)] for p in ("android","ios")}))
           print("PORT CANDIDATE COUNTS:",json.dumps(report["counts"],indent=2))
           for x in rows:
-              if x["category"] in ("MINIMAP_UI","MONSTERS","MINIONS","TOWERS","OTHER_UI","MAP_OTHER") and x["status"]!="identical":
-                  print("PORT_CANDIDATE",json.dumps(x,sort_keys=True))
+              if x["category"] in ("MINIMAP_UI","MONSTERS","MINIONS","TOWERS","OTHER_UI","MAP_OTHER") and x["status"]!="identical": print("PORT_CANDIDATE",json.dumps(x,sort_keys=True))
           PY
 
       - name: Test UnityPy parsing on one small minion bundle (read-only)
@@ -407,39 +272,50 @@ jobs:
           set -euo pipefail
           python -m pip install --quiet UnityPy
           python - <<'PY'
-          import pathlib, json, traceback, UnityPy
+          import pathlib, json, UnityPy
           base=pathlib.Path("/tmp/map-port-input/android")
           candidates=list(base.rglob("charbattle_soldier_for_performance_10312_low.assetbundle"))
-          out=pathlib.Path("archive-report/unitypy-minion-test.json")
           result={"candidate_count":len(candidates),"tests":[]}
           for p in candidates[:1]:
               row={"path":p.relative_to(base).as_posix(),"size":p.stat().st_size}
               try:
-                  env=UnityPy.load(str(p))
-                  objects=list(env.objects)
-                  row["load"]="success"
-                  row["object_count"]=len(objects)
-                  row["object_types"]={}
-                  for obj in objects:
-                      name=obj.type.name
-                      row["object_types"][name]=row["object_types"].get(name,0)+1
+                  env=UnityPy.load(str(p)); objects=list(env.objects); row["load"]="success"; row["object_count"]=len(objects); row["object_types"]={}
+                  for obj in objects: row["object_types"][obj.type.name]=row["object_types"].get(obj.type.name,0)+1
                   row["sample_names"]=[]
                   for obj in objects[:30]:
                       try:
-                          data=obj.read()
-                          n=getattr(data,"m_Name",None)
+                          data=obj.read(); n=getattr(data,"m_Name",None)
                           if n: row["sample_names"].append({"type":obj.type.name,"name":str(n)[:160]})
-                      except Exception as exc:
-                          row.setdefault("object_read_errors",[]).append(type(exc).__name__+": "+str(exc)[:180])
-              except Exception as exc:
-                  row["load"]="failed"
-                  row["error_type"]=type(exc).__name__
-                  row["error"]=str(exc)[:1000]
+                      except Exception as exc: row.setdefault("object_read_errors",[]).append(type(exc).__name__+": "+str(exc)[:180])
+              except Exception as exc: row.update({"load":"failed","error_type":type(exc).__name__,"error":str(exc)[:1000]})
               result["tests"].append(row)
-          if not candidates:
-              result["error"]="selected minion bundle not found"
-          out.write_text(json.dumps(result,indent=2),encoding="utf-8")
+          if not candidates: result["error"]="selected minion bundle not found"
+          pathlib.Path("archive-report/unitypy-minion-test.json").write_text(json.dumps(result,indent=2),encoding="utf-8")
           print("UNITYPY_MINION_TEST",json.dumps(result,indent=2))
+          PY
+
+      - name: Try recovering Android UnityCN key from available iOS metadata
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib, traceback
+          import UnityPy
+          from UnityPy.helpers import ArchiveStorageManager as ASM
+          metadata="/tmp/global-metadata.dat"
+          key_sig=bytes.fromhex("7ab90a0c3b370abd1593cdda1e92509f")
+          data_sig=bytes.fromhex("463104710df04c1c9914a214947274c8")
+          report={"metadata_file":metadata,"metadata_size":pathlib.Path(metadata).stat().st_size,
+                  "unitypy_version":getattr(UnityPy,"__version__","unknown"),
+                  "key_sig":key_sig.hex(),"data_sig":data_sig.hex(),
+                  "method_doc":ASM.brute_force_key.__doc__,"result":None}
+          try:
+              key=ASM.brute_force_key(metadata,key_sig,data_sig,verbose=False)
+              report["result"]="found" if key else "not_found"
+              report["key_hex"]=key.hex() if key else None
+          except Exception as exc:
+              report["result"]="error"; report["error_type"]=type(exc).__name__; report["error"]=str(exc); report["traceback"]=traceback.format_exc()[-3000:]
+          pathlib.Path("archive-report/unitycn-key-probe.json").write_text(json.dumps(report,indent=2),encoding="utf-8")
+          print("UNITYCN_KEY_PROBE",json.dumps(report,indent=2))
           PY
 
       - name: Upload inventory only (never upload game assets)
