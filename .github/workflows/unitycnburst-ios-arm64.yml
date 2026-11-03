@@ -22,6 +22,13 @@ jobs:
         with:
           version: 0.15.2
 
+      - name: Install ldid
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install ldid
+          ldid --version || true
+
       - name: Checkout upstream UnityCNBurst
         uses: actions/checkout@v4
         with:
@@ -46,10 +53,9 @@ jobs:
           cp "$LIBSYSTEM" "$ZIG_LIB_DIR/libc/darwin/libSystem.tbd"
           echo "Zig binary: $ZIG_BIN"
           echo "Zig library directory: $ZIG_LIB_DIR"
-          echo "Prepared vendored libSystem:"
           ls -l "$ZIG_LIB_DIR/libc/darwin/libSystem.tbd"
 
-      - name: Build for physical iOS arm64
+      - name: Build, ldid-sign, and inspect iOS executables
         working-directory: upstream/UnityCNBurst
         shell: bash
         run: |
@@ -58,22 +64,57 @@ jobs:
           ZIG_ROOT="$(cd "$(dirname "$ZIG_BIN")" && pwd)"
           ZIG_LIB_DIR="$ZIG_ROOT/lib"
           echo "Zig: $("$ZIG_BIN" version)"
-          # Explicit -L forces Zig's Mach-O resolver to inspect the directory
-          # containing the prepared libSystem.tbd instead of relying on SDK inference.
-          mkdir -p zig-out/bin
+          mkdir -p dist
+
+          # Build the actual scanner for physical iOS arm64.
           "$ZIG_BIN" build-exe src/main.zig -O ReleaseFast -target aarch64-ios \
             -L "$ZIG_LIB_DIR/libc/darwin" \
-            -femit-bin=zig-out/bin/UnityCNBurst
-          test -f zig-out/bin/UnityCNBurst
-          file zig-out/bin/UnityCNBurst
-          otool -l zig-out/bin/UnityCNBurst | grep -A5 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_IPHONEOS' || true
-          codesign --force --sign - zig-out/bin/UnityCNBurst
-          shasum -a 256 zig-out/bin/UnityCNBurst
+            -femit-bin=dist/UnityCNBurst
 
-      - name: Upload iOS arm64 executable
+          # A tiny independent program distinguishes signing/launch failures
+          # from bugs in UnityCNBurst itself.
+          cat > smoke.zig <<'ZIG'
+          const std = @import("std");
+          pub fn main() void {
+              std.debug.print("iOS arm64 smoke test OK\\n", .{});
+          }
+          ZIG
+          "$ZIG_BIN" build-exe smoke.zig -O ReleaseFast -target aarch64-ios \
+            -L "$ZIG_LIB_DIR/libc/darwin" \
+            -femit-bin=dist/ios-smoke
+
+          # ldid creates the pseudo-signature expected by jailbroken iOS tools.
+          ldid -S dist/UnityCNBurst
+          ldid -S dist/ios-smoke
+
+          echo "=== MACH-O ==="
+          file dist/UnityCNBurst dist/ios-smoke
+          for BIN in dist/UnityCNBurst dist/ios-smoke; do
+            echo "=== $BIN load commands ==="
+            otool -l "$BIN" | grep -A5 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_IPHONEOS|LC_CODE_SIGNATURE' || true
+            echo "=== $BIN ldid CDHash ==="
+            ldid -h "$BIN"
+            echo "=== $BIN codesign details ==="
+            codesign -dv --verbose=2 "$BIN" 2>&1 || true
+          done
+          shasum -a 256 dist/UnityCNBurst dist/ios-smoke
+
+          cat > dist/README.txt <<'TXT'
+          UnityCNBurst iOS arm64 test package
+
+          IMPORTANT: run ./ios-smoke FIRST on the jailbroken iPhone.
+          Expected output: iOS arm64 smoke test OK
+
+          If ios-smoke is killed, the issue is the iOS executable launch/signing
+          environment or target, not UnityCNBurst's key scanner.
+          If ios-smoke works, run UnityCNBurst with no arguments; it should print
+          its Usage text. Only after that should the actual metadata scan be run.
+          TXT
+
+      - name: Upload iOS arm64 diagnostic package
         uses: actions/upload-artifact@v4
         with:
-          name: UnityCNBurst-ios-arm64
-          path: upstream/UnityCNBurst/zig-out/bin/UnityCNBurst
+          name: UnityCNBurst-ios-arm64-signed-diagnostics
+          path: upstream/UnityCNBurst/dist/
           if-no-files-found: error
           retention-days: 7
