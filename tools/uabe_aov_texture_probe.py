@@ -14,6 +14,42 @@ import sys
 
 import UnityPy_AOV
 
+# UnityPy_AOV 1.9.24 tests the legacy 0x200 encryption bit inside
+# decompress_data(). For Unity 2022.3 bundles, 0x200 means block-info
+# alignment; encryption moved to 0x400. Use the parsed bundle flag set
+# instead, so both legacy and current Unity flag layouts are handled.
+from UnityPy_AOV.files.BundleFile import BundleFile
+from UnityPy_AOV.enums import ArchiveFlags, CompressionFlags
+from UnityPy_AOV.helpers import CompressionHelper
+
+
+def _decompress_data_with_bundle_encryption(
+    self, compressed_data, uncompressed_size, flags, index=0
+):
+    comp_flag = flags & ArchiveFlags.CompressionTypeMask
+    if comp_flag == CompressionFlags.LZMA:
+        return CompressionHelper.decompress_lzma(compressed_data)
+    if comp_flag in (CompressionFlags.LZ4, CompressionFlags.LZ4HC):
+        encrypted = bool(
+            self.dataflags
+            & self.dataflags.UsesAssetBundleEncryption
+        )
+        if encrypted:
+            if self.decryptor is None:
+                raise RuntimeError(
+                    "Bundle encryption is enabled but no decryptor was initialized"
+                )
+            compressed_data = self.decryptor.decrypt_block(compressed_data)
+        return CompressionHelper.decompress_lz4(
+            compressed_data, uncompressed_size
+        )
+    if comp_flag == CompressionFlags.LZHAM:
+        raise NotImplementedError("LZHAM decompression not implemented")
+    return compressed_data
+
+
+BundleFile.decompress_data = _decompress_data_with_bundle_encryption
+
 ROOT = pathlib.Path("/tmp/map-port-input")
 OUT = pathlib.Path("uabe-aov-probe-report")
 OUT.mkdir(parents=True, exist_ok=True)
