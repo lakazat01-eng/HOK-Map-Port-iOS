@@ -71,25 +71,38 @@ jobs:
             -L "$ZIG_LIB_DIR/libc/darwin" \
             -femit-bin=dist/UnityCNBurst
 
-          # A tiny independent program distinguishes signing/launch failures
-          # from bugs in UnityCNBurst itself.
+          # Zig-built smoke test.
           cat > smoke.zig <<'ZIG'
           const std = @import("std");
           pub fn main() void {
-              std.debug.print("iOS arm64 smoke test OK\\n", .{});
+              std.debug.print("Zig iOS arm64 smoke OK\\n", .{});
           }
           ZIG
           "$ZIG_BIN" build-exe smoke.zig -O ReleaseFast -target aarch64-ios \
             -L "$ZIG_LIB_DIR/libc/darwin" \
             -femit-bin=dist/ios-smoke
 
-          # ldid creates the pseudo-signature expected by jailbroken iOS tools.
+          # Independent reference executable built by Apple's iPhoneOS SDK.
+          # If this runs but the Zig one does not, the Zig-produced Mach-O is
+          # the differentiator; if both are killed, inspect device signing/AMFI.
+          cat > smoke.c <<'C'
+          #include <unistd.h>
+          int main(void) {
+              const char msg[] = "Apple Clang iOS arm64 smoke OK\\n";
+              return (write(1, msg, sizeof(msg) - 1) < 0) ? 1 : 0;
+          }
+          C
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=14.0 \
+            -O2 smoke.c -o dist/clang-smoke
+
+          # Pseudo-sign all binaries for a jailbroken device.
           ldid -S dist/UnityCNBurst
           ldid -S dist/ios-smoke
+          ldid -S dist/clang-smoke
 
           echo "=== MACH-O ==="
-          file dist/UnityCNBurst dist/ios-smoke
-          for BIN in dist/UnityCNBurst dist/ios-smoke; do
+          file dist/UnityCNBurst dist/ios-smoke dist/clang-smoke
+          for BIN in dist/UnityCNBurst dist/ios-smoke dist/clang-smoke; do
             echo "=== $BIN load commands ==="
             otool -l "$BIN" | grep -A5 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_IPHONEOS|LC_CODE_SIGNATURE' || true
             echo "=== $BIN ldid CDHash ==="
@@ -97,18 +110,19 @@ jobs:
             echo "=== $BIN codesign details ==="
             codesign -dv --verbose=2 "$BIN" 2>&1 || true
           done
-          shasum -a 256 dist/UnityCNBurst dist/ios-smoke
+          shasum -a 256 dist/UnityCNBurst dist/ios-smoke dist/clang-smoke
 
           cat > dist/README.txt <<'TXT'
           UnityCNBurst iOS arm64 test package
 
-          IMPORTANT: run ./ios-smoke FIRST on the jailbroken iPhone.
-          Expected output: iOS arm64 smoke test OK
+          TEST ORDER:
+          1. ./clang-smoke  -> Apple Clang reference binary
+          2. ./ios-smoke    -> Zig-built reference binary
+          3. ./UnityCNBurst -> scanner usage without arguments
 
-          If ios-smoke is killed, the issue is the iOS executable launch/signing
-          environment or target, not UnityCNBurst's key scanner.
-          If ios-smoke works, run UnityCNBurst with no arguments; it should print
-          its Usage text. Only after that should the actual metadata scan be run.
+          If clang-smoke runs but ios-smoke is killed, investigate Zig's Mach-O.
+          If both smoke tests are killed, investigate device-side signing/AMFI.
+          Do not run the metadata scan until the scanner prints Usage correctly.
           TXT
 
       - name: Upload iOS arm64 diagnostic package
