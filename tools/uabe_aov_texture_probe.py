@@ -9,6 +9,7 @@ import hashlib
 import json
 import pathlib
 import re
+import struct
 import sys
 
 import UnityPy_AOV
@@ -21,6 +22,34 @@ CANDIDATE = re.compile(
     r"(allshared|battlecommon_raw|ugui_skill_raw|charbattle_soldier)",
     re.IGNORECASE,
 )
+
+def raw_bundle_header(path):
+    data = path.read_bytes()
+    pos = data.find(bytes([0]))
+    if pos < 0:
+        return {"header_error": "missing signature terminator"}
+    signature = data[:pos].decode("ascii", "replace")
+    cursor = pos + 1
+    if cursor + 4 > len(data):
+        return {"signature": signature, "header_error": "truncated format"}
+    fmt = struct.unpack_from(">I", data, cursor)[0]
+    cursor += 4
+    strings = []
+    for _ in range(2):
+        end = data.find(bytes([0]), cursor)
+        if end < 0:
+            return {"signature": signature, "format": fmt, "header_error": "truncated version string"}
+        strings.append(data[cursor:end].decode("ascii", "replace"))
+        cursor = end + 1
+    raw = data[cursor:cursor + 20]
+    result = {"signature": signature, "format": fmt, "player_version": strings[0], "engine_version": strings[1], "header_offset": cursor, "header_hex": raw.hex()}
+    if len(raw) >= 20:
+        result["raw_size_fields_hex"] = raw[:16].hex()
+        result["raw_data_flags"] = struct.unpack_from(">I", raw, 16)[0]
+        result["raw_data_flags_hex"] = hex(result["raw_data_flags"])
+    else:
+        result["header_error"] = "truncated UnityFS header"
+    return result
 
 def texture_fingerprint(image):
     rgba = image.convert("RGBA")
@@ -54,6 +83,7 @@ for platform in ("android", "ios"):
         row = {
             "path": rel,
             "size": path.stat().st_size,
+            "raw_header": raw_bundle_header(path),
             "load": "started",
             "object_count": 0,
             "object_types": {},
@@ -62,12 +92,18 @@ for platform in ("android", "ios"):
         }
         try:
             env = UnityPy_AOV.load(str(path))
+            root_file = getattr(env, "file", None)
+            row["root_file_type"] = type(root_file).__name__ if root_file is not None else None
+            row["root_nested_file_count"] = len(getattr(root_file, "files", {}) or {})
             objects = list(env.objects)
             counts = collections.Counter(obj.type.name for obj in objects)
-            row["load"] = "success"
+            row["load"] = "success" if objects else "no_objects"
             row["object_count"] = len(objects)
             row["object_types"] = dict(sorted(counts.items()))
-            platform_report["parsed"] += 1
+            if objects:
+                platform_report["parsed"] += 1
+            else:
+                platform_report["no_objects"] = platform_report.get("no_objects", 0) + 1
 
             for obj in objects:
                 try:
@@ -115,8 +151,10 @@ for platform in ("android", "ios"):
             "platform": platform,
             "path": rel,
             "load": row["load"],
+            "root_file_type": row.get("root_file_type"),
             "object_count": row["object_count"],
             "texture_count": len(row["textures"]),
+            "raw_header": row["raw_header"],
             "error": row.get("error"),
         }, ensure_ascii=False))
 
@@ -149,6 +187,8 @@ report["summary"] = {
     "ios_bundles_parsed": report["platforms"]["ios"]["parsed"],
     "android_bundles_failed": report["platforms"]["android"]["failed"],
     "ios_bundles_failed": report["platforms"]["ios"]["failed"],
+    "android_bundles_no_objects": report["platforms"]["android"].get("no_objects", 0),
+    "ios_bundles_no_objects": report["platforms"]["ios"].get("no_objects", 0),
     "matched_texture_pairs": len(report["matches"]),
     "different_texture_pairs": sum(
         item["status"] == "texture_replacement_candidate"
