@@ -2,6 +2,11 @@ name: Inspect private map archive
 
 on:
   workflow_dispatch:
+    inputs:
+      metadata_drive_url:
+        description: 'Google Drive share URL for global-metadata.dat'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -42,6 +47,24 @@ jobs:
                   print("::error::ZIP CRC check failed at:", bad)
                   sys.exit(1)
           print("ZIP central directory and CRC checks passed.")
+          PY
+
+      - name: Download and fingerprint global-metadata.dat
+        env:
+          METADATA_DRIVE_URL: ${{ inputs.metadata_drive_url }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet gdown
+          gdown "$METADATA_DRIVE_URL" -O /tmp/global-metadata.dat
+          python - <<'PY'
+          import hashlib, json, os, pathlib
+          p=pathlib.Path("/tmp/global-metadata.dat")
+          if not p.is_file() or p.stat().st_size < 1024:
+              raise SystemExit("Downloaded file is missing or implausibly small; check Drive sharing and file URL.")
+          h=hashlib.sha256(p.read_bytes()).hexdigest()
+          report={"filename":p.name,"size":p.stat().st_size,"sha256":h,"header_hex":p.read_bytes()[:32].hex()}
+          pathlib.Path("metadata-report.json").write_text(json.dumps(report,indent=2))
+          print("METADATA_INPUT",json.dumps(report))
           PY
 
       - name: Create read-only archive inventory
@@ -423,6 +446,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: map-scene-header-inspection
-          path: archive-report/
-          if-no-files-found: error
+          path: |\n            archive-report/\n            metadata-report.json\n          if-no-files-found: error
           retention-days: 7
