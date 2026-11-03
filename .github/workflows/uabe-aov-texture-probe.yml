@@ -75,9 +75,12 @@ jobs:
                       continue
                   target = work / label
                   target.mkdir(parents=True, exist_ok=True)
-                  with outer.open(entry) as src:
-                      import io
-                      with zipfile.ZipFile(io.BytesIO(src.read())) as inner:
+                  import tempfile
+                  with tempfile.NamedTemporaryFile(suffix=".zip") as tmp:
+                      with outer.open(entry) as src:
+                          shutil.copyfileobj(src, tmp)
+                      tmp.flush()
+                      with zipfile.ZipFile(tmp.name) as inner:
                           safe_extract(inner, target)
                   print("Extracted", entry.filename, "to", target)
           for platform in ("android", "ios"):
@@ -85,6 +88,11 @@ jobs:
               print(platform, "assetbundle count:",
                     sum(1 for p in root.rglob("*.assetbundle") if p.is_file()) if root.exists() else 0)
           PY
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
       - name: Install UABE_AOV parser
         run: |
