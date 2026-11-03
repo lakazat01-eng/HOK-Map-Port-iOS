@@ -176,7 +176,7 @@ jobs:
           targets={"scene_artist_5v5_v4_lv3.assetbundle","scene_artist_5v5_v4_lv4.assetbundle","scene_artist_5v5_v4_lv5.assetbundle"}
           cab_re=re.compile(rb"CAB-([0-9a-fA-F]{32})")
           def cstring(buf,pos):
-              end=buf.find(b"\\0",pos)
+              end=buf.find(b"\0",pos)
               if end<0: raise ValueError("unterminated string")
               return buf[pos:end].decode("ascii","replace"),end+1
           rows=[]
@@ -185,7 +185,7 @@ jobs:
               for path in sorted(root.rglob("*")):
                   if not path.is_file() or path.name.lower() not in targets: continue
                   with path.open("rb") as f: head=f.read(512)
-                  row={"platform":platform,"path":path.relative_to(root).as_posix(),"size":path.stat().st_size,"header_hex_64":head[:64].hex(),"header_ascii_64":"".join(chr(x) if 32<=x<127 else "." for x in head[:64]),"starts_UnityFS":head.startswith(b"UnityFS\\0")}
+                  row={"platform":platform,"path":path.relative_to(root).as_posix(),"size":path.stat().st_size,"header_hex_64":head[:64].hex(),"header_ascii_64":"".join(chr(x) if 32<=x<127 else "." for x in head[:64]),"starts_UnityFS":head.startswith(b"UnityFS\0")}
                   if row["starts_UnityFS"]:
                       try:
                           pos=8; row["format_version"]=int.from_bytes(head[pos:pos+4],"big"); pos+=4
@@ -240,7 +240,7 @@ jobs:
                           e=buf.index(0,pos); return buf[pos:e].decode("ascii","replace"),e+1
                       _,pos=cs(head,pos); revision,pos=cs(head,pos); fixed=head[pos:pos+20]
                       if len(fixed)==20:
-                          flags=int.from_bytes(fixed[16:20],"big"); m=re.match(r"^(\\d+)\\.(\\d+)\\.(\\d+)",revision)
+                          flags=int.from_bytes(fixed[16:20],"big"); m=re.match(r"^(\d+)\\.(\d+)\\.(\d+)",revision)
                           if m:
                               major,minor,patch=map(int,m.groups()); mask=0x200 if (major<2020 or (major==2020 and minor==3 and patch<=34) or (major==2021 and minor==3 and patch<=2) or (major==2022 and minor==3 and patch<=1)) else 0x400
                               protected=bool(flags&mask)
