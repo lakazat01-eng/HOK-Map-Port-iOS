@@ -1,0 +1,53 @@
+name: Build UnityCNBurst for jailbroken iPhone (arm64)
+
+on:
+  push:
+    branches:
+      - tools/unitycnburst-ios-arm64
+    paths:
+      - .github/workflows/unitycnburst-ios-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios-arm64:
+    runs-on: macos-14
+    steps:
+      - name: Checkout workspace
+        uses: actions/checkout@v4
+
+      - name: Install Zig 0.15.1
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Checkout upstream UnityCNBurst
+        uses: actions/checkout@v4
+        with:
+          repository: AXiX-official/UnityCNBurst
+          ref: master
+          path: upstream/UnityCNBurst
+
+      - name: Build for physical iOS arm64
+        working-directory: upstream/UnityCNBurst
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Zig: $(zig version)"
+          IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "iPhoneOS SDK: $IOS_SDK"
+          zig build --sysroot "$IOS_SDK" -Dtarget=aarch64-ios -Doptimize=ReleaseFast
+          test -f zig-out/bin/UnityCNBurst
+          file zig-out/bin/UnityCNBurst
+          otool -l zig-out/bin/UnityCNBurst | grep -A5 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_IPHONEOS' || true
+          codesign --force --sign - zig-out/bin/UnityCNBurst
+          shasum -a 256 zig-out/bin/UnityCNBurst
+
+      - name: Upload iOS arm64 executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnityCNBurst-ios-arm64
+          path: upstream/UnityCNBurst/zig-out/bin/UnityCNBurst
+          if-no-files-found: error
+          retention-days: 7
