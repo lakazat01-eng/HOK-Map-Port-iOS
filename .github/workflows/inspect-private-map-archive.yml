@@ -297,6 +297,7 @@ jobs:
       - name: Try recovering Android UnityCN key from available iOS metadata
         run: |
           set -euo pipefail
+          python -m pip install --quiet pycryptodome
           python - <<'PY'
           import json, pathlib, traceback
           import UnityPy
