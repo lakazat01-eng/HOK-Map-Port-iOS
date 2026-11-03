@@ -30,24 +30,23 @@ jobs:
           path: upstream/UnityCNBurst
 
       - name: Locate iOS SDK system stub
-        id: sdk
         shell: bash
         run: |
           set -euo pipefail
           IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
-          echo "IOS_SDK=$IOS_SDK" >> "$GITHUB_ENV"
           echo "SDK=$IOS_SDK"
-          echo "libSystem candidates:"
-          find "$IOS_SDK/usr/lib" -maxdepth 1 -iname 'libsystem*.tbd' -print
-          LIBSYSTEM="$(find "$IOS_SDK/usr/lib" -maxdepth 1 -iname 'libsystem*.tbd' -print -quit)"
-          if [[ -z "$LIBSYSTEM" ]]; then
-            echo "::error::No libSystem .tbd stub found in iPhoneOS SDK"
-            exit 1
-          fi
-          ZIG_LIB_DIR="$(zig env | python3 -c 'import json,sys; print(json.load(sys.stdin)["lib_dir"])')"
+          LIBSYSTEM="$IOS_SDK/usr/lib/libSystem.tbd"
+          test -f "$LIBSYSTEM" || { echo "::error::Missing $LIBSYSTEM"; exit 1; }
+
+          ZIG_BIN="$(command -v zig)"
+          ZIG_ROOT="$(cd "$(dirname "$ZIG_BIN")" && pwd)"
+          ZIG_LIB_DIR="$ZIG_ROOT/lib"
+          echo "Zig binary: $ZIG_BIN"
+          echo "Zig lib dir: $ZIG_LIB_DIR"
+          test -d "$ZIG_LIB_DIR" || { echo "::error::Zig lib directory not found"; exit 1; }
+
           mkdir -p "$ZIG_LIB_DIR/libc/darwin"
           cp "$LIBSYSTEM" "$ZIG_LIB_DIR/libc/darwin/libSystem.tbd"
-          echo "Copied $LIBSYSTEM to Zig Darwin fallback path"
           ls -l "$ZIG_LIB_DIR/libc/darwin/libSystem.tbd"
 
       - name: Build for physical iOS arm64
@@ -55,6 +54,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
           echo "Zig: $(zig version)"
           zig build --sysroot "$IOS_SDK" -Dtarget=aarch64-ios -Doptimize=ReleaseFast
           test -f zig-out/bin/UnityCNBurst
