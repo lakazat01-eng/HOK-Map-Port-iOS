@@ -16,42 +16,9 @@ import sys
 
 import UnityPy_AOV
 
-# UnityPy_AOV 1.9.24 uses the legacy 0x200 bit for encryption in
-# decompress_data(). Unity 2022.3 uses 0x400 in the bundle header to
-# initialize the decryptor, but encrypted data blocks are identified by
-# bit 0x100 in each block's own flags. Block-info data must not be
-# decrypted merely because the bundle header has the encryption flag.
-from UnityPy_AOV.files.BundleFile import BundleFile
-from UnityPy_AOV.enums import ArchiveFlags, CompressionFlags
-from UnityPy_AOV.helpers import CompressionHelper
-
-
-def _decompress_data_with_bundle_encryption(
-    self, compressed_data, uncompressed_size, flags, index=0
-):
-    comp_flag = flags & ArchiveFlags.CompressionTypeMask
-    if uncompressed_size == 0:
-        return b""
-    if (
-        self.decryptor is not None
-        and flags & 0x100
-        and comp_flag != CompressionFlags.NONE
-    ):
-        compressed_data = self.decryptor.decrypt_block(
-            compressed_data, index
-        )
-    if comp_flag == CompressionFlags.LZMA:
-        return CompressionHelper.decompress_lzma(compressed_data)
-    if comp_flag in (CompressionFlags.LZ4, CompressionFlags.LZ4HC):
-        return CompressionHelper.decompress_lz4(
-            compressed_data, uncompressed_size
-        )
-    if comp_flag == CompressionFlags.LZHAM:
-        raise NotImplementedError("LZHAM decompression not implemented")
-    return compressed_data
-
-
-BundleFile.decompress_data = _decompress_data_with_bundle_encryption
+# Keep UnityPy_AOV's native BundleFile implementation intact. Its AOV fork
+# includes the matching AES header transform and SM4 block decryptor; replacing
+# decompress_data() here bypasses the block-info decryption path and breaks LZ4.
 
 ROOT = pathlib.Path("/tmp/map-port-input")
 OUT = pathlib.Path("uabe-aov-probe-report")
