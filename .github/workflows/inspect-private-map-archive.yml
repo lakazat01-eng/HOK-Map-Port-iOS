@@ -267,60 +267,85 @@ jobs:
               if x["category"] in ("MINIMAP_UI","MONSTERS","MINIONS","TOWERS","OTHER_UI","MAP_OTHER") and x["status"]!="identical": print("PORT_CANDIDATE",json.dumps(x,sort_keys=True))
           PY
 
-      - name: Test UnityPy parsing on one small minion bundle (read-only)
+      - name: Analyze UI and monster port candidates (read-only)
         run: |
           set -euo pipefail
           python -m pip install --quiet UnityPy
           python - <<'PY'
-          import pathlib, json, UnityPy
-          base=pathlib.Path("/tmp/map-port-input/android")
-          candidates=list(base.rglob("charbattle_soldier_for_performance_10312_low.assetbundle"))
-          result={"candidate_count":len(candidates),"tests":[]}
-          for p in candidates[:1]:
-              row={"path":p.relative_to(base).as_posix(),"size":p.stat().st_size}
-              try:
-                  env=UnityPy.load(str(p)); objects=list(env.objects); row["load"]="success"; row["object_count"]=len(objects); row["object_types"]={}
-                  for obj in objects: row["object_types"][obj.type.name]=row["object_types"].get(obj.type.name,0)+1
-                  row["sample_names"]=[]
-                  for obj in objects[:30]:
-                      try:
-                          data=obj.read(); n=getattr(data,"m_Name",None)
-                          if n: row["sample_names"].append({"type":obj.type.name,"name":str(n)[:160]})
-                      except Exception as exc: row.setdefault("object_read_errors",[]).append(type(exc).__name__+": "+str(exc)[:180])
-              except Exception as exc: row.update({"load":"failed","error_type":type(exc).__name__,"error":str(exc)[:1000]})
-              result["tests"].append(row)
-          if not candidates: result["error"]="selected minion bundle not found"
-          pathlib.Path("archive-report/unitypy-minion-test.json").write_text(json.dumps(result,indent=2),encoding="utf-8")
-          print("UNITYPY_MINION_TEST",json.dumps(result,indent=2))
-          PY
-
-      - name: Try recovering Android UnityCN key from available iOS metadata
-        run: |
-          set -euo pipefail
-          python -m pip install --quiet pycryptodome
-          python - <<'PY'
-          import json, pathlib, traceback
+          import pathlib, json, collections, traceback, re
           import UnityPy
           from UnityPy.helpers import ArchiveStorageManager as ASM
+
+          root=pathlib.Path("/tmp/map-port-input/android")
           metadata="/tmp/global-metadata.dat"
-          probes={
-              "android_minion_10312_low":("7ab90a0c3b370abd1593cdda1e92509f","463104710df04c1c9914a214947274c8"),
-              "android_allshared":("bdaab79f7da45ad5a440fab5592b4f4","20731594fc34e2ea863cea208a0f3022"),
-              "android_ugui_map5":("6426bfc3f8032ec802fbe5d2ed2a598e","526c1f7b6935eb1ce55999d74f682f10"),
-              "ios_allshared_control":("9e4cd430250d6af6996efcf27f80413a","8d43eae681ef9a00802b3f4e70318e61")
+          wanted={
+              "allshared.assetbundle": "UI_ATLAS",
+              "battlecommon_raw.assetbundle": "BATTLE_UI",
+              "ugui_skill_raw.assetbundle": "SKILL_UI_CONTROL",
+              "charbattle_monster_1.assetbundle": "MONSTER_MODELS",
           }
-          report={"metadata_file":metadata,"metadata_size":pathlib.Path(metadata).stat().st_size,
-                  "unitypy_version":getattr(UnityPy,"__version__","unknown"),
-                  "method_doc":ASM.brute_force_key.__doc__,"probes":{}}
-          for name,(ks,ds) in probes.items():
-              key_sig=bytes.fromhex(ks); data_sig=bytes.fromhex(ds)
+          candidates=[]
+          for p in root.rglob("*.assetbundle"):
+              if p.name in wanted:
+                  candidates.append((p,wanted[p.name]))
+          report={"unitypy_version":getattr(UnityPy,"__version__","unknown"),
+                  "metadata_size":pathlib.Path(metadata).stat().st_size,
+                  "scope":"read-only parse and object inventory; no game files modified or uploaded",
+                  "candidates":[]}
+          for p,category in sorted(candidates,key=lambda x:x[1]):
+              row={"category":category,"path":p.relative_to(root).as_posix(),
+                   "size":p.stat().st_size,"load":"not_started"}
               try:
-                  key=ASM.brute_force_key(metadata,key_sig,data_sig,verbose=False)
-                  report["probes"][name]={"result":"found" if key else "not_found","key_hex":key.hex() if key else None}
-              except Exception as exc:
-                  report["probes"][name]={"result":"error","error_type":type(exc).__name__,"error":str(exc),"traceback":traceback.format_exc()[-1500:]}
-          pathlib.Path("archive-report/unitycn-key-probe.json").write_text(json.dumps(report,indent=2),encoding="utf-8")
-          print("UNITYCN_KEY_PROBE",json.dumps(report,indent=2))
+                  env=UnityPy.load(str(p))
+                  row["load"]="success"
+              except Exception as first:
+                  msg=str(first)
+                  m=re.search(r"key_sig = b'([^']+)', data_sig = b'([^']+)'",msg)
+                  if not m:
+                      row.update({"load":"failed","error_type":type(first).__name__,"error":msg[:1200]})
+                      report["candidates"].append(row); continue
+                  try:
+                      # The signatures are read from UnityPy's actual parse error;
+                      # no guessed or hard-coded signatures are used.
+                      key_sig=eval("b'"+m.group(1)+"'")
+                      data_sig=eval("b'"+m.group(2)+"'")
+                      row["unitycn_signatures"]={"key_sig_hex":key_sig.hex(),"data_sig_hex":data_sig.hex()}
+                      key=ASM.brute_force_key(metadata,key_sig,data_sig,verbose=False)
+                      if not key:
+                          row.update({"load":"encrypted_key_not_found","error":msg[:900]})
+                          report["candidates"].append(row); continue
+                      row["key_recovered"]=True
+                      UnityPy.set_assetbundle_decrypt_key(key)
+                      env=UnityPy.load(str(p)); row["load"]="success_after_key_recovery"
+                  except Exception as exc:
+                      row.update({"load":"failed_after_key_probe","error_type":type(exc).__name__,
+                                  "error":str(exc)[:1200]})
+                      report["candidates"].append(row); continue
+
+              objects=list(env.objects)
+              counts=collections.Counter(o.type.name for o in objects)
+              row["object_count"]=len(objects)
+              row["object_types"]=dict(sorted(counts.items()))
+              row["named_objects"]=[]
+              row["read_errors"]=[]
+              for obj in objects:
+                  try:
+                      data=obj.read()
+                      name=getattr(data,"m_Name",None)
+                      if name:
+                          row["named_objects"].append({"type":obj.type.name,"name":str(name)[:180]})
+                  except Exception as exc:
+                      if len(row["read_errors"])<20:
+                          row["read_errors"].append({"type":obj.type.name,"error":type(exc).__name__+": "+str(exc)[:160]})
+              report["candidates"].append(row)
+              print("PORT_CANDIDATE_RESULT",json.dumps(row,ensure_ascii=False))
+          report["summary"]={"candidate_count":len(candidates),
+              "parsed":sum(x["load"].startswith("success") for x in report["candidates"]),
+              "encrypted_key_not_found":sum(x["load"]=="encrypted_key_not_found" for x in report["candidates"]),
+              "failed":sum(x["load"].startswith("failed") for x in report["candidates"])}
+          pathlib.Path("archive-report/ui-monster-port-analysis.json").write_text(
+              json.dumps(report,indent=2,ensure_ascii=False),encoding="utf-8")
+          print("UI_MONSTER_PORT_SUMMARY",json.dumps(report["summary"]))
           PY
 
       - name: Upload inventory only (never upload game assets)
