@@ -29,14 +29,33 @@ jobs:
           ref: master
           path: upstream/UnityCNBurst
 
+      - name: Locate iOS SDK system stub
+        id: sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "IOS_SDK=$IOS_SDK" >> "$GITHUB_ENV"
+          echo "SDK=$IOS_SDK"
+          echo "libSystem candidates:"
+          find "$IOS_SDK/usr/lib" -maxdepth 1 -iname 'libsystem*.tbd' -print
+          LIBSYSTEM="$(find "$IOS_SDK/usr/lib" -maxdepth 1 -iname 'libsystem*.tbd' -print -quit)"
+          if [[ -z "$LIBSYSTEM" ]]; then
+            echo "::error::No libSystem .tbd stub found in iPhoneOS SDK"
+            exit 1
+          fi
+          ZIG_LIB_DIR="$(zig env | python3 -c 'import json,sys; print(json.load(sys.stdin)["lib_dir"])')"
+          mkdir -p "$ZIG_LIB_DIR/libc/darwin"
+          cp "$LIBSYSTEM" "$ZIG_LIB_DIR/libc/darwin/libSystem.tbd"
+          echo "Copied $LIBSYSTEM to Zig Darwin fallback path"
+          ls -l "$ZIG_LIB_DIR/libc/darwin/libSystem.tbd"
+
       - name: Build for physical iOS arm64
         working-directory: upstream/UnityCNBurst
         shell: bash
         run: |
           set -euo pipefail
           echo "Zig: $(zig version)"
-          IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
-          echo "iPhoneOS SDK: $IOS_SDK"
           zig build --sysroot "$IOS_SDK" -Dtarget=aarch64-ios -Doptimize=ReleaseFast
           test -f zig-out/bin/UnityCNBurst
           file zig-out/bin/UnityCNBurst
