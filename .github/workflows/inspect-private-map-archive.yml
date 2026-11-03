@@ -379,6 +379,46 @@ jobs:
                   print("PORT_CANDIDATE",json.dumps(x,sort_keys=True))
           PY
 
+      - name: Test UnityPy parsing on one small minion bundle (read-only)
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet UnityPy
+          python - <<'PY'
+          import pathlib, json, traceback, UnityPy
+          base=pathlib.Path("/tmp/map-port-input/android")
+          candidates=list(base.rglob("charbattle_soldier_for_performance_10312_low.assetbundle"))
+          out=pathlib.Path("archive-report/unitypy-minion-test.json")
+          result={"candidate_count":len(candidates),"tests":[]}
+          for p in candidates[:1]:
+              row={"path":p.relative_to(base).as_posix(),"size":p.stat().st_size}
+              try:
+                  env=UnityPy.load(str(p))
+                  objects=list(env.objects)
+                  row["load"]="success"
+                  row["object_count"]=len(objects)
+                  row["object_types"]={}
+                  for obj in objects:
+                      name=obj.type.name
+                      row["object_types"][name]=row["object_types"].get(name,0)+1
+                  row["sample_names"]=[]
+                  for obj in objects[:30]:
+                      try:
+                          data=obj.read()
+                          n=getattr(data,"m_Name",None)
+                          if n: row["sample_names"].append({"type":obj.type.name,"name":str(n)[:160]})
+                      except Exception as exc:
+                          row.setdefault("object_read_errors",[]).append(type(exc).__name__+": "+str(exc)[:180])
+              except Exception as exc:
+                  row["load"]="failed"
+                  row["error_type"]=type(exc).__name__
+                  row["error"]=str(exc)[:1000]
+              result["tests"].append(row)
+          if not candidates:
+              result["error"]="selected minion bundle not found"
+          out.write_text(json.dumps(result,indent=2),encoding="utf-8")
+          print("UNITYPY_MINION_TEST",json.dumps(result,indent=2))
+          PY
+
       - name: Upload inventory only (never upload game assets)
         uses: actions/upload-artifact@v4
         with:
