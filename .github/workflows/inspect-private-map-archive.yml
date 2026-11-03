@@ -2,6 +2,11 @@ name: Inspect private map archive
 
 on:
   workflow_dispatch:
+    inputs:
+      metadata_drive_url:
+        description: 'Google Drive share URL for global-metadata.dat'
+        required: true
+        type: string
 
 permissions:
   contents: read
