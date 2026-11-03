@@ -306,79 +306,74 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import pathlib, hashlib, json, re, collections
-          base = pathlib.Path("/tmp/map-port-input")
-          roots = {
-              "android": [base/"android"/"Resources", base/"android"/"Extra"],
-              "ios": [base/"ios"/"Resources", base/"ios"/"Extra"],
-          }
+          base=pathlib.Path("/tmp/map-port-input")
+          def find_tiers(platform):
+              root=base/platform
+              return [p for p in root.rglob("*") if p.is_dir() and p.name.lower() in ("resources","extra")]
           def digest(p):
               h=hashlib.sha256()
               with p.open("rb") as f:
-                  for b in iter(lambda:f.read(1024*1024),b""): h.update(b)
+                  for block in iter(lambda:f.read(1024*1024),b""): h.update(block)
               return h.hexdigest()
           def category(s):
               x=s.lower()
               if "minimap" in x or "ugui_map" in x: return "MINIMAP_UI"
-              if "monster" in x or "野怪" in x: return "MONSTERS"
-              if "soldier" in x or "minion" in x: return "MINIONS"
-              if "tower" in x: return "TOWERS"
+              if any(k in x for k in ("monster","野怪")): return "MONSTERS"
+              if any(k in x for k in ("soldier","minion","兵线")): return "MINIONS"
+              if "tower" in x or "防御塔" in x: return "TOWERS"
               if "scene" in x or "terrain" in x: return "SCENE_TERRAIN"
               if "map" in x: return "MAP_OTHER"
               if "ugui" in x or "/ui" in x: return "OTHER_UI"
               return "OTHER"
-          def inspect(p, root):
+          def inspect(p,root):
               with p.open("rb") as f: head=f.read(128)
               unityfs=head.startswith(b"UnityFS\\0")
               revision=None; flags=None; protected=None; note="non_UnityFS_or_other"
               if unityfs:
                   try:
-                      pos=8; fmt=int.from_bytes(head[pos:pos+4],"big"); pos+=4
+                      pos=8
+                      _fmt=int.from_bytes(head[pos:pos+4],"big"); pos+=4
                       def cs(buf,pos):
                           e=buf.index(0,pos); return buf[pos:e].decode("ascii","replace"),e+1
                       _,pos=cs(head,pos); revision,pos=cs(head,pos)
-                      raw=head[pos:pos+20]
-                      if len(raw)==20:
-                          flags=int.from_bytes(raw[16:20],"big")
+                      fixed=head[pos:pos+20]
+                      if len(fixed)==20:
+                          flags=int.from_bytes(fixed[16:20],"big")
                           m=re.match(r"^(\\d+)\\.(\\d+)\\.(\\d+)",revision)
                           if m:
-                              a,b,d=map(int,m.groups())
-                              mask=0x200 if (a<2020 or (a==2020 and b==3 and d<=34) or (a==2021 and b==3 and d<=2) or (a==2022 and b==3 and d<=1)) else 0x400
+                              major,minor,patch=map(int,m.groups())
+                              mask=0x200 if (major<2020 or (major==2020 and minor==3 and patch<=34) or (major==2021 and minor==3 and patch<=2) or (major==2022 and minor==3 and patch<=1)) else 0x400
                               protected=bool(flags&mask)
-                          note="UnityFS_header_only"
+                          note="header heuristic only; UnityCN not decrypted"
                   except Exception: note="UnityFS_header_parse_incomplete"
               return {"path":p.relative_to(root).as_posix(),"size":p.stat().st_size,"sha256":digest(p),
                       "unityfs":unityfs,"unity_revision":revision,"flags":flags,
                       "unitycn_indicator_heuristic":protected,"header_note":note}
           ios={}
-          for root in roots["ios"]:
-              if root.exists():
-                  for p in root.rglob("*"):
-                      if p.is_file():
-                          rel=p.relative_to(root).as_posix()
-                          ios.setdefault(rel,[]).append(inspect(p,root))
+          for root in find_tiers("ios"):
+              for p in root.rglob("*"):
+                  if p.is_file():
+                      x=inspect(p,root); ios.setdefault(x["path"],[]).append(x)
           rows=[]
-          for root in roots["android"]:
-              if not root.exists(): continue
+          for root in find_tiers("android"):
               for p in root.rglob("*"):
                   if not p.is_file(): continue
-                  x=inspect(p,root); rel=x["path"]
-                  hits=ios.get(rel,[])
-                  same=next((h for h in hits if h["sha256"]==x["sha256"]),None)
-                  x["category"]=category(rel)
+                  x=inspect(p,root); hits=ios.get(x["path"],[])
+                  x["category"]=category(x["path"])
                   x["ios_same_path_count"]=len(hits)
-                  x["ios_same_path_hash_match"]=bool(same)
+                  x["ios_same_path_hash_match"]=any(h["sha256"]==x["sha256"] for h in hits)
                   x["ios_same_path_sizes"]=[h["size"] for h in hits]
-                  x["status"]="identical" if same else ("same_path_changed" if hits else "android_only")
+                  x["status"]="identical" if x["ios_same_path_hash_match"] else ("same_path_changed" if hits else "android_only")
                   rows.append(x)
           priority={"MINIMAP_UI":0,"MONSTERS":1,"MINIONS":2,"TOWERS":3,"MAP_OTHER":4,"OTHER_UI":5,"SCENE_TERRAIN":6,"OTHER":7}
           rows.sort(key=lambda x:(priority[x["category"]],x["unitycn_indicator_heuristic"] is True,x["size"]))
           counts=collections.Counter((x["category"],x["status"]) for x in rows)
-          report={"total_android_files":len(rows),"counts":{a+"/"+b:n for (a,b),n in sorted(counts.items())},
-                  "ranked_candidates":rows}
+          report={"total_android_files":len(rows),"counts":{a+"/"+b:n for (a,b),n in sorted(counts.items())},"ranked_candidates":rows}
           pathlib.Path("archive-report/port-candidates.json").write_text(json.dumps(report,indent=2),encoding="utf-8")
+          print("DISCOVERED TIERS",json.dumps({p:[str(x.relative_to(base/p)) for x in find_tiers(p)] for p in ("android","ios")}))
           print("PORT CANDIDATE COUNTS:",json.dumps(report["counts"],indent=2))
           for x in rows:
-              if x["category"] in ("MONSTERS","MINIONS","TOWERS","OTHER_UI","MAP_OTHER") and x["status"]!="identical":
+              if x["category"] in ("MINIMAP_UI","MONSTERS","MINIONS","TOWERS","OTHER_UI","MAP_OTHER") and x["status"]!="identical":
                   print("PORT_CANDIDATE",json.dumps(x,sort_keys=True))
           PY
 
