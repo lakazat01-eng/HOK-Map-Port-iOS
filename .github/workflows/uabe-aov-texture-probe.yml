@@ -1,0 +1,114 @@
+name: UABE_AOV Android UI and Minion Texture Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download private map archive
+        env:
+          MAP_ASSET_URL: ${{ secrets.MAP_ASSET_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MAP_ASSET_URL:-}" ]; then
+            echo "::error::Repository secret MAP_ASSET_URL is missing."
+            exit 1
+          fi
+          if echo "$MAP_ASSET_URL" | grep -qi 'drive.google.com'; then
+            python -m pip install --quiet gdown
+            gdown "$MAP_ASSET_URL" -O /tmp/map-input.zip
+          else
+            curl --fail --location --silent --show-error --retry 3 \
+              --connect-timeout 30 --max-time 1800 \
+              "$MAP_ASSET_URL" -o /tmp/map-input.zip
+          fi
+          python - <<'PY'
+          import pathlib, zipfile
+          p = pathlib.Path("/tmp/map-input.zip")
+          if not zipfile.is_zipfile(p):
+              raise SystemExit("MAP_ASSET_URL did not return a ZIP archive")
+          with zipfile.ZipFile(p) as z:
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit("ZIP CRC check failed: " + bad)
+          print("Validated archive bytes:", p.stat().st_size)
+          PY
+
+      - name: Extract Android and iOS input archives
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import pathlib, zipfile, shutil
+          outer_path = "/tmp/map-input.zip"
+          work = pathlib.Path("/tmp/map-port-input")
+          shutil.rmtree(work, ignore_errors=True)
+          work.mkdir(parents=True, exist_ok=True)
+
+          def safe_extract(zf, destination):
+              base = destination.resolve()
+              for item in zf.infolist():
+                  target = (destination / item.filename).resolve()
+                  if target != base and base not in target.parents:
+                      raise RuntimeError("Unsafe archive path: " + item.filename)
+              zf.extractall(destination)
+
+          with zipfile.ZipFile(outer_path) as outer:
+              for entry in outer.infolist():
+                  low = entry.filename.lower()
+                  if entry.is_dir() or not low.endswith(".zip"):
+                      continue
+                  label = (
+                      "ios" if "ios" in low
+                      else "android" if ("hok" in low or "andr" in low)
+                      else None
+                  )
+                  if not label:
+                      continue
+                  target = work / label
+                  target.mkdir(parents=True, exist_ok=True)
+                  import tempfile
+                  with tempfile.NamedTemporaryFile(suffix=".zip") as tmp:
+                      with outer.open(entry) as src:
+                          shutil.copyfileobj(src, tmp)
+                      tmp.flush()
+                      with zipfile.ZipFile(tmp.name) as inner:
+                          safe_extract(inner, target)
+                  print("Extracted", entry.filename, "to", target)
+          for platform in ("android", "ios"):
+              root = work / platform
+              print(platform, "assetbundle count:",
+                    sum(1 for p in root.rglob("*.assetbundle") if p.is_file()) if root.exists() else 0)
+          PY
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install UABE_AOV parser
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir "git+https://github.com/hexaov91/UnityPy_AOV.git"
+
+      - name: Probe Android minion and UI bundles against iOS
+        run: |
+          set -euo pipefail
+          python tools/uabe_aov_texture_probe.py
+
+      - name: Upload metadata report only
+        uses: actions/upload-artifact@v4
+        with:
+          name: uabe-aov-texture-probe-report
+          path: uabe-aov-probe-report/report.json
+          if-no-files-found: error
+          retention-days: 7
