@@ -114,7 +114,7 @@ jobs:
                       with zipfile.ZipFile(tmp.name) as inner:
                           bad = inner.testzip()
                           for sub in inner.infolist():
-                              path = sub.filename.replace("\\\\", "/")
+                              path = sub.filename.replace("\\", "/")
                               row = {
                                   "archive": item.filename,
                                   "path": path,
