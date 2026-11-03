@@ -303,18 +303,22 @@ jobs:
           import UnityPy
           from UnityPy.helpers import ArchiveStorageManager as ASM
           metadata="/tmp/global-metadata.dat"
-          key_sig=bytes.fromhex("7ab90a0c3b370abd1593cdda1e92509f")
-          data_sig=bytes.fromhex("463104710df04c1c9914a214947274c8")
+          probes={
+              "android_minion_10312_low":("7ab90a0c3b370abd1593cdda1e92509f","463104710df04c1c9914a214947274c8"),
+              "android_allshared":("bdaab79f7da45ad5a440fab5592b4f4","20731594fc34e2ea863cea208a0f3022"),
+              "android_ugui_map5":("6426bfc3f8032ec802fbe5d2ed2a598e","526c1f7b6935eb1ce55999d74f682f10"),
+              "ios_allshared_control":("9e4cd430250d6af6996efcf27f80413a","8d43eae681ef9a00802b3f4e70318e61")
+          }
           report={"metadata_file":metadata,"metadata_size":pathlib.Path(metadata).stat().st_size,
                   "unitypy_version":getattr(UnityPy,"__version__","unknown"),
-                  "key_sig":key_sig.hex(),"data_sig":data_sig.hex(),
-                  "method_doc":ASM.brute_force_key.__doc__,"result":None}
-          try:
-              key=ASM.brute_force_key(metadata,key_sig,data_sig,verbose=False)
-              report["result"]="found" if key else "not_found"
-              report["key_hex"]=key.hex() if key else None
-          except Exception as exc:
-              report["result"]="error"; report["error_type"]=type(exc).__name__; report["error"]=str(exc); report["traceback"]=traceback.format_exc()[-3000:]
+                  "method_doc":ASM.brute_force_key.__doc__,"probes":{}}
+          for name,(ks,ds) in probes.items():
+              key_sig=bytes.fromhex(ks); data_sig=bytes.fromhex(ds)
+              try:
+                  key=ASM.brute_force_key(metadata,key_sig,data_sig,verbose=False)
+                  report["probes"][name]={"result":"found" if key else "not_found","key_hex":key.hex() if key else None}
+              except Exception as exc:
+                  report["probes"][name]={"result":"error","error_type":type(exc).__name__,"error":str(exc),"traceback":traceback.format_exc()[-1500:]}
           pathlib.Path("archive-report/unitycn-key-probe.json").write_text(json.dumps(report,indent=2),encoding="utf-8")
           print("UNITYCN_KEY_PROBE",json.dumps(report,indent=2))
           PY
