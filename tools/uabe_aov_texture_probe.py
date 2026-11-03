@@ -16,10 +16,11 @@ import sys
 
 import UnityPy_AOV
 
-# UnityPy_AOV 1.9.24 tests the legacy 0x200 encryption bit inside
-# decompress_data(). For Unity 2022.3 bundles, 0x200 means block-info
-# alignment; encryption moved to 0x400. Use the parsed bundle flag set
-# instead, so both legacy and current Unity flag layouts are handled.
+# UnityPy_AOV 1.9.24 uses the legacy 0x200 bit for encryption in
+# decompress_data(). Unity 2022.3 uses 0x400 in the bundle header to
+# initialize the decryptor, but encrypted data blocks are identified by
+# bit 0x100 in each block's own flags. Block-info data must not be
+# decrypted merely because the bundle header has the encryption flag.
 from UnityPy_AOV.files.BundleFile import BundleFile
 from UnityPy_AOV.enums import ArchiveFlags, CompressionFlags
 from UnityPy_AOV.helpers import CompressionHelper
@@ -29,19 +30,19 @@ def _decompress_data_with_bundle_encryption(
     self, compressed_data, uncompressed_size, flags, index=0
 ):
     comp_flag = flags & ArchiveFlags.CompressionTypeMask
+    if uncompressed_size == 0:
+        return b""
+    if (
+        self.decryptor is not None
+        and flags & 0x100
+        and comp_flag != CompressionFlags.NONE
+    ):
+        compressed_data = self.decryptor.decrypt_block(
+            compressed_data, index
+        )
     if comp_flag == CompressionFlags.LZMA:
         return CompressionHelper.decompress_lzma(compressed_data)
     if comp_flag in (CompressionFlags.LZ4, CompressionFlags.LZ4HC):
-        encrypted = bool(
-            self.dataflags
-            & self.dataflags.UsesAssetBundleEncryption
-        )
-        if encrypted:
-            if self.decryptor is None:
-                raise RuntimeError(
-                    "Bundle encryption is enabled but no decryptor was initialized"
-                )
-            compressed_data = self.decryptor.decrypt_block(compressed_data)
         return CompressionHelper.decompress_lz4(
             compressed_data, uncompressed_size
         )
