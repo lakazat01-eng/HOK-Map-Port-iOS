@@ -93,6 +93,52 @@ jobs:
               w.writeheader(); w.writerows(rows)
           with open(out + "/bundles.json", "w") as f:
               json.dump(bundles, f, indent=2)
+          # Inspect nested ZIPs one level deep without extracting game assets.
+          import tempfile
+          nested_rows = []
+          nested_bundles = []
+          with zipfile.ZipFile(archive) as outer:
+              for item in outer.infolist():
+                  if item.is_dir() or not item.filename.lower().endswith(".zip"):
+                      continue
+                  with tempfile.NamedTemporaryFile(suffix=".zip") as tmp:
+                      with outer.open(item) as src, open(tmp.name, "wb") as dst:
+                          while True:
+                              chunk = src.read(8 * 1024 * 1024)
+                              if not chunk:
+                                  break
+                              dst.write(chunk)
+                      if not zipfile.is_zipfile(tmp.name):
+                          nested_rows.append({"archive": item.filename, "error": "not a valid ZIP"})
+                          continue
+                      with zipfile.ZipFile(tmp.name) as inner:
+                          bad = inner.testzip()
+                          for sub in inner.infolist():
+                              path = sub.filename.replace("\\\\", "/")
+                              row = {
+                                  "archive": item.filename,
+                                  "path": path,
+                                  "size": sub.file_size,
+                                  "compressed_size": sub.compress_size,
+                                  "is_dir": sub.is_dir(),
+                              }
+                              nested_rows.append(row)
+                              if not sub.is_dir() and path.lower().endswith((".assetbundle", ".bundle", ".bytes")):
+                                  with inner.open(sub) as sf:
+                                      head = sf.read(96)
+                                  b = dict(row)
+                                  b["header_hex"] = head[:32].hex()
+                                  b["header_ascii"] = "".join(chr(x) if 32 <= x < 127 else "." for x in head[:32])
+                                  b["starts_unityfs"] = head.startswith(b"UnityFS")
+                                  nested_bundles.append(b)
+                          print("Nested archive:", item.filename, "entries:", len(inner.infolist()), "crc_error:", bad)
+          with open(out + "/nested-files.csv", "w", newline="") as f:
+              fields = ["archive","path","size","compressed_size","is_dir","error"]
+              w = csv.DictWriter(f, fieldnames=fields)
+              w.writeheader(); w.writerows(nested_rows)
+          with open(out + "/nested-bundles.json", "w") as f:
+              json.dump(nested_bundles, f, indent=2)
+          print("Nested ZIP entries:", len(nested_rows), "nested bundle-like files:", len(nested_bundles))
           print(json.dumps(summary, indent=2))
           PY
 
