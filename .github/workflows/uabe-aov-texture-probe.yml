@@ -98,7 +98,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install --no-cache-dir "git+https://github.com/hexaov91/UnityPy_AOV.git"
+          python -m pip install --no-cache-dir "git+https://github.com/hexaov91/UnityPy_AOV.git" tabulate
 
       - name: Probe Android minion and UI bundles against iOS
         run: |
