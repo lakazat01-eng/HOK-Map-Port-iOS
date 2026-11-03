@@ -301,6 +301,41 @@ jobs:
               raise SystemExit("No target scene bundles found; inspect archive paths before proceeding.")
           PY
 
+      - name: Audit previous port trials against source assets (read-only)
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import zipfile, pathlib, hashlib, json, os
+          outer_path = "/tmp/map-input.zip"
+          out = pathlib.Path("archive-report")
+          rows = []
+          with zipfile.ZipFile(outer_path) as z:
+              for item in z.infolist():
+                  name = item.filename.replace("\\\\", "/")
+                  if not name.lower().startswith("output/") or item.is_dir():
+                      continue
+                  h = hashlib.sha256()
+                  with z.open(item) as src:
+                      head = src.read(64)
+                      h.update(head)
+                      while True:
+                          chunk = src.read(1024*1024)
+                          if not chunk: break
+                          h.update(chunk)
+                  rows.append({
+                      "path": name, "size": item.file_size,
+                      "sha256": h.hexdigest(),
+                      "header_hex_64": head.hex(),
+                      "header_ascii_64": "".join(chr(x) if 32 <= x < 127 else "." for x in head),
+                      "starts_UnityFS": head.startswith(b"UnityFS\\0"),
+                  })
+          rows.sort(key=lambda x: (x["path"].lower(), x["size"]))
+          (out/"previous-port-trials.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
+          print("PREVIOUS PORT TRIAL FILE COUNT:", len(rows))
+          for row in rows:
+              print("PORT_TRIAL", json.dumps(row, sort_keys=True))
+          PY
+
       - name: Upload inventory only (never upload game assets)
         uses: actions/upload-artifact@v4
         with:
