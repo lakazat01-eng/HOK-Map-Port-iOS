@@ -237,7 +237,7 @@ jobs:
           }
           cab_re = re.compile(rb"CAB-([0-9a-fA-F]{32})")
           def cstring(buf, pos):
-              end = buf.find(b"\\0", pos)
+              end = buf.find(b"\0", pos)
               if end < 0: raise ValueError("unterminated string")
               return buf[pos:end].decode("ascii", "replace"), end + 1
           rows = []
@@ -254,7 +254,7 @@ jobs:
                       "size": path.stat().st_size,
                       "header_hex_64": head[:64].hex(),
                       "header_ascii_64": "".join(chr(x) if 32 <= x < 127 else "." for x in head[:64]),
-                      "starts_UnityFS": head.startswith(b"UnityFS\\0"),
+                      "starts_UnityFS": head.startswith(b"UnityFS\0"),
                   }
                   if row["starts_UnityFS"]:
                       try:
