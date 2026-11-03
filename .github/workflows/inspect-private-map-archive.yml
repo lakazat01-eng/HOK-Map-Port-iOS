@@ -142,6 +142,87 @@ jobs:
           print(json.dumps(summary, indent=2))
           PY
 
+      - name: Compare Android and iOS map assets
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import zipfile, tempfile, os, shutil, pathlib, json, hashlib, collections
+          outer_path = "/tmp/map-input.zip"
+          work = pathlib.Path("/tmp/map-port-input")
+          shutil.rmtree(work, ignore_errors=True)
+          work.mkdir(parents=True)
+          with zipfile.ZipFile(outer_path) as outer:
+              for entry in outer.infolist():
+                  low = entry.filename.lower()
+                  if entry.is_dir() or not low.endswith(".zip"):
+                      continue
+                  label = "ios" if "ios" in low else "android" if ("hok" in low or "andr" in low) else None
+                  if not label:
+                      continue
+                  target = work / label
+                  target.mkdir(parents=True, exist_ok=True)
+                  with outer.open(entry) as src, zipfile.ZipFile(src) as inner:
+                      inner.extractall(target)
+                  print("Extracted", entry.filename, "to", target)
+          # Report the actual extracted tree and discover Resources/Extra roots.
+          for platform in ("android", "ios"):
+              root = work / platform
+              print("\\nPLATFORM", platform)
+              for p in sorted(root.rglob("*")):
+                  if p.is_dir() and p.name.lower() in ("resources", "extra"):
+                      print("ROOT", p.relative_to(root).as_posix())
+          # Pair file paths and hashes across Android/iOS tiers. This first pass
+          # stages only exact binary matches; all changed Unity bundles remain untouched.
+          def files_under(root):
+              out = {}
+              if root.exists():
+                  for p in root.rglob("*"):
+                      if p.is_file():
+                          h = hashlib.sha256()
+                          with p.open("rb") as f:
+                              for chunk in iter(lambda: f.read(1024*1024), b""):
+                                  h.update(chunk)
+                          out[p.relative_to(root).as_posix()] = (p.stat().st_size, h.hexdigest(), p)
+              return out
+          def find_dirs(platform):
+              base = work / platform
+              resources = [p for p in base.rglob("Resources") if p.is_dir()]
+              extras = [p for p in base.rglob("Extra") if p.is_dir()]
+              return resources, extras
+          ar, ae = find_dirs("android")
+          ir, ie = find_dirs("ios")
+          print("DISCOVERED", json.dumps({
+              "android_resources": [str(x.relative_to(work/"android")) for x in ar],
+              "android_extra": [str(x.relative_to(work/"android")) for x in ae],
+              "ios_resources": [str(x.relative_to(work/"ios")) for x in ir],
+              "ios_extra": [str(x.relative_to(work/"ios")) for x in ie],
+          }, indent=2))
+          # Compare every Android Resources/Extra tree against both iOS tiers.
+          ios_index = {}
+          for tier, dirs in (("ios_resources", ir), ("ios_extra", ie)):
+              for d in dirs:
+                  for rel, info in files_under(d).items():
+                      ios_index.setdefault((rel, info[1]), []).append((tier, d, info))
+          matched, changed, absent = [], [], []
+          for tier, dirs in (("android_resources", ar), ("android_extra", ae)):
+              for d in dirs:
+                  for rel, info in files_under(d).items():
+                      key = (rel, info[1])
+                      if key in ios_index:
+                          matched.append({"source":tier,"path":rel,"size":info[0],"target_tiers":[x[0] for x in ios_index[key]]})
+                      elif any(k[0] == rel for k in ios_index):
+                          changed.append({"source":tier,"path":rel,"size":info[0],"status":"same_path_different_hash"})
+                      else:
+                          absent.append({"source":tier,"path":rel,"size":info[0]})
+          result = {"exact_matches":matched,"same_path_changed":changed,"android_only":absent,
+                    "counts":{"exact_matches":len(matched),"same_path_changed":len(changed),"android_only":len(absent)}}
+          pathlib.Path("archive-report/port-comparison.json").write_text(json.dumps(result,indent=2))
+          print("PORT COMPARISON", json.dumps(result["counts"], indent=2))
+          print("EXACT MATCH SAMPLE", json.dumps(matched[:40], indent=2))
+          print("CHANGED MAP/SCENE SAMPLE", json.dumps([x for x in changed if any(k in x["path"].lower() for k in ("map","scene","terrain","ugui"))][:80], indent=2))
+          print("ANDROID-ONLY MAP/SCENE SAMPLE", json.dumps([x for x in absent if any(k in x["path"].lower() for k in ("map","scene","terrain","ugui"))][:80], indent=2))
+          PY
+
       - name: Upload inventory only (never upload game assets)
         uses: actions/upload-artifact@v4
         with:
