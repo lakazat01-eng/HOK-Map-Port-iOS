@@ -301,39 +301,85 @@ jobs:
               raise SystemExit("No target scene bundles found; inspect archive paths before proceeding.")
           PY
 
-      - name: Audit previous port trials against source assets (read-only)
+      - name: Rank Android assets for practical port attempts (read-only)
         run: |
           set -euo pipefail
           python - <<'PY'
-          import zipfile, pathlib, hashlib, json, os
-          outer_path = "/tmp/map-input.zip"
-          out = pathlib.Path("archive-report")
-          rows = []
-          with zipfile.ZipFile(outer_path) as z:
-              for item in z.infolist():
-                  name = item.filename.replace("\\\\", "/")
-                  if not name.lower().startswith("output/") or item.is_dir():
-                      continue
-                  h = hashlib.sha256()
-                  with z.open(item) as src:
-                      head = src.read(64)
-                      h.update(head)
-                      while True:
-                          chunk = src.read(1024*1024)
-                          if not chunk: break
-                          h.update(chunk)
-                  rows.append({
-                      "path": name, "size": item.file_size,
-                      "sha256": h.hexdigest(),
-                      "header_hex_64": head.hex(),
-                      "header_ascii_64": "".join(chr(x) if 32 <= x < 127 else "." for x in head),
-                      "starts_UnityFS": head.startswith(b"UnityFS\\0"),
-                  })
-          rows.sort(key=lambda x: (x["path"].lower(), x["size"]))
-          (out/"previous-port-trials.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
-          print("PREVIOUS PORT TRIAL FILE COUNT:", len(rows))
-          for row in rows:
-              print("PORT_TRIAL", json.dumps(row, sort_keys=True))
+          import pathlib, hashlib, json, re, collections
+          base = pathlib.Path("/tmp/map-port-input")
+          roots = {
+              "android": [base/"android"/"Resources", base/"android"/"Extra"],
+              "ios": [base/"ios"/"Resources", base/"ios"/"Extra"],
+          }
+          def digest(p):
+              h=hashlib.sha256()
+              with p.open("rb") as f:
+                  for b in iter(lambda:f.read(1024*1024),b""): h.update(b)
+              return h.hexdigest()
+          def category(s):
+              x=s.lower()
+              if "minimap" in x or "ugui_map" in x: return "MINIMAP_UI"
+              if "monster" in x or "野怪" in x: return "MONSTERS"
+              if "soldier" in x or "minion" in x: return "MINIONS"
+              if "tower" in x: return "TOWERS"
+              if "scene" in x or "terrain" in x: return "SCENE_TERRAIN"
+              if "map" in x: return "MAP_OTHER"
+              if "ugui" in x or "/ui" in x: return "OTHER_UI"
+              return "OTHER"
+          def inspect(p, root):
+              with p.open("rb") as f: head=f.read(128)
+              unityfs=head.startswith(b"UnityFS\\0")
+              revision=None; flags=None; protected=None; note="non_UnityFS_or_other"
+              if unityfs:
+                  try:
+                      pos=8; fmt=int.from_bytes(head[pos:pos+4],"big"); pos+=4
+                      def cs(buf,pos):
+                          e=buf.index(0,pos); return buf[pos:e].decode("ascii","replace"),e+1
+                      _,pos=cs(head,pos); revision,pos=cs(head,pos)
+                      raw=head[pos:pos+20]
+                      if len(raw)==20:
+                          flags=int.from_bytes(raw[16:20],"big")
+                          m=re.match(r"^(\\d+)\\.(\\d+)\\.(\\d+)",revision)
+                          if m:
+                              a,b,d=map(int,m.groups())
+                              mask=0x200 if (a<2020 or (a==2020 and b==3 and d<=34) or (a==2021 and b==3 and d<=2) or (a==2022 and b==3 and d<=1)) else 0x400
+                              protected=bool(flags&mask)
+                          note="UnityFS_header_only"
+                  except Exception: note="UnityFS_header_parse_incomplete"
+              return {"path":p.relative_to(root).as_posix(),"size":p.stat().st_size,"sha256":digest(p),
+                      "unityfs":unityfs,"unity_revision":revision,"flags":flags,
+                      "unitycn_indicator_heuristic":protected,"header_note":note}
+          ios={}
+          for root in roots["ios"]:
+              if root.exists():
+                  for p in root.rglob("*"):
+                      if p.is_file():
+                          rel=p.relative_to(root).as_posix()
+                          ios.setdefault(rel,[]).append(inspect(p,root))
+          rows=[]
+          for root in roots["android"]:
+              if not root.exists(): continue
+              for p in root.rglob("*"):
+                  if not p.is_file(): continue
+                  x=inspect(p,root); rel=x["path"]
+                  hits=ios.get(rel,[])
+                  same=next((h for h in hits if h["sha256"]==x["sha256"]),None)
+                  x["category"]=category(rel)
+                  x["ios_same_path_count"]=len(hits)
+                  x["ios_same_path_hash_match"]=bool(same)
+                  x["ios_same_path_sizes"]=[h["size"] for h in hits]
+                  x["status"]="identical" if same else ("same_path_changed" if hits else "android_only")
+                  rows.append(x)
+          priority={"MINIMAP_UI":0,"MONSTERS":1,"MINIONS":2,"TOWERS":3,"MAP_OTHER":4,"OTHER_UI":5,"SCENE_TERRAIN":6,"OTHER":7}
+          rows.sort(key=lambda x:(priority[x["category"]],x["unitycn_indicator_heuristic"] is True,x["size"]))
+          counts=collections.Counter((x["category"],x["status"]) for x in rows)
+          report={"total_android_files":len(rows),"counts":{a+"/"+b:n for (a,b),n in sorted(counts.items())},
+                  "ranked_candidates":rows}
+          pathlib.Path("archive-report/port-candidates.json").write_text(json.dumps(report,indent=2),encoding="utf-8")
+          print("PORT CANDIDATE COUNTS:",json.dumps(report["counts"],indent=2))
+          for x in rows:
+              if x["category"] in ("MONSTERS","MINIONS","TOWERS","OTHER_UI","MAP_OTHER") and x["status"]!="identical":
+                  print("PORT_CANDIDATE",json.dumps(x,sort_keys=True))
           PY
 
       - name: Upload inventory only (never upload game assets)
