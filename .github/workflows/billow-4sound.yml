@@ -1,0 +1,76 @@
+name: Billow 4-sound SFX test patch
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_zip_url:
+        description: "Direct share/download URL for source.zip (outer ZIP containing Billow source ZIP and zstd_dict.bin)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Billow patcher branch
+        uses: actions/checkout@v4
+        with:
+          ref: billow-4sound
+
+      - name: Install zstd
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd
+
+      - name: Download source archive
+        env:
+          SOURCE_ZIP_URL: ${{ inputs.source_zip_url }}
+        run: |
+          set -euo pipefail
+          if [[ "$SOURCE_ZIP_URL" == *"drive.google.com"* ]]; then
+            python -m pip install --quiet gdown
+            gdown "$SOURCE_ZIP_URL" -O /tmp/source.zip
+          else
+            curl --fail --location --silent --show-error --retry 3 \
+              --connect-timeout 30 --max-time 1800 \
+              "$SOURCE_ZIP_URL" -o /tmp/source.zip
+          fi
+          python - <<'PY'
+          import zipfile, os, sys
+          p = "/tmp/source.zip"
+          print("Downloaded bytes:", os.path.getsize(p))
+          if not zipfile.is_zipfile(p):
+              raise SystemExit("The URL did not return a ZIP archive.")
+          with zipfile.ZipFile(p) as z:
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit("ZIP CRC check failed: " + bad)
+              names = z.namelist()
+              if not any(x.endswith("zstd_dict.bin") for x in names):
+                  raise SystemExit("zstd_dict.bin not found in source ZIP.")
+              if not any(x.lower().endswith(".zip") for x in names):
+                  raise SystemExit("Nested Billow source ZIP not found.")
+          print("Source ZIP integrity and required inputs passed.")
+          PY
+
+      - name: Build and structurally validate the BNK
+        run: |
+          set -euo pipefail
+          python tools/billow_4sound_patch.py \
+            --source-zip /tmp/source.zip \
+            --out-dir output
+
+      - name: Upload test patch artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Billow-4Sound-Ulti-Test
+          path: |
+            output/Billow_4Sound_Ulti_GitHub_Test.zip
+            output/Hero_Billow_Skin_52807_SFX_4SOUND_TEST.bnk
+            output/validation-report.json
+          if-no-files-found: error
+          retention-days: 7
